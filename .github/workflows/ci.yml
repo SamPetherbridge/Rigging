@@ -21,7 +21,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Swift 6.2
         uses: swift-actions/setup-swift@v2
@@ -63,7 +63,7 @@ jobs:
       image: swift:6.2-noble
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Toolchain Version
         run: swift --version
