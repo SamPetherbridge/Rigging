@@ -31,10 +31,27 @@ Rigging (Umbrella: @_exported RiggingCore + Macro declarations)
 
 ---
 
-## Local Development & Verification
+## Local Development & Pre-Push Verification
+
+`Rigging` enforces all build, test, and documentation gates locally via a tracked Git `pre-push` hook (`.githooks/pre-push`) rather than GitHub Actions CI.
 
 ### Prerequisites
 - **Swift 6.2+** (Xcode 26+ on macOS 15+, or `swift:6.2-noble` on Ubuntu 24.04)
+
+### Enable the Local `pre-push` Hook
+After cloning the repository, install the tracked Git hooks once:
+
+```bash
+./scripts/install-hooks.sh
+```
+
+This configures `git config core.hooksPath .githooks` so every `git push` automatically verifies zero-warning compilation, the full parallel `Swift Testing` suite, and multi-module DocC generation across all 11 library targets. You can also run the full gate manually at any time:
+
+```bash
+./.githooks/pre-push </dev/null
+```
+
+*(In an emergency, set `RIGGING_SKIP_PRE_PUSH=1` to bypass the hook for a single push.)*
 
 ### 1. Strict Zero-Warning Build
 ```bash
@@ -165,4 +182,4 @@ Common prefixes:
 - `📝` Documentation / DocC updates
 - `✅` Adding or updating `Swift Testing` suites
 - `🔒` Security hardening
-- `👷` CI / GitHub Actions updates
+- `🔧` Build / Git hook configuration updates

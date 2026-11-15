@@ -357,7 +357,7 @@ Full multi-module **Apple DocC** reference documentation and conceptual guides (
 
 ## Contributing & Security
 
-- Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for module dependency boundaries, zero-warning build/test/DocC checks, and extension guides.
+- Run `./scripts/install-hooks.sh` after cloning to enable the local `.githooks/pre-push` verification gate (zero-warning Swift 6 build, parallel `Swift Testing` suite, and multi-module DocC `--warnings-as-errors` check), and read [`CONTRIBUTING.md`](CONTRIBUTING.md) for module dependency boundaries and extension guides.
 - To report a security vulnerability privately, see [`SECURITY.md`](SECURITY.md).
 - Please review our [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${RIGGING_SKIP_PRE_PUSH:-0}" == "1" ]]; then
+    echo "⚠️  [Rigging pre-push] Skipping pre-push verification because RIGGING_SKIP_PRE_PUSH=1 is set." >&2
+    exit 0
+fi
+
+# Inspect ref updates passed by `git push` on stdin (`<local-ref> <local-oid> <remote-ref> <remote-oid>`).
+# Skip verification when pushing branch/tag deletions only (all-zero local OID).
+if [[ ! -t 0 ]]; then
+    saw_input=0
+    has_non_delete_update=0
+    while read -r _local_ref local_oid _remote_ref _remote_oid; do
+        [[ -z "${local_oid:-}" ]] && continue
+        saw_input=1
+        if [[ ! "$local_oid" =~ ^0+$ ]]; then
+            has_non_delete_update=1
+        fi
+    done
+
+    if [[ "$saw_input" -eq 1 && "$has_non_delete_update" -eq 0 ]]; then
+        echo "ℹ️  [Rigging pre-push] Remote ref deletion only; skipping build, test, and DocC checks."
+        exit 0
+    fi
+fi
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Detect nested sandbox environments or non-writable default module caches so the hook works
+# seamlessly both natively in Terminal/Xcode and inside sandboxed build environments.
+swift_extra_flags=()
+default_cache_parent="${HOME:-/nonexistent}/Library/Caches"
+if [[ -n "${SANDBOX_RUNTIME:-}" ]] \
+    || [[ ! -w "$default_cache_parent" ]] \
+    || { [[ -x /usr/bin/sandbox-exec ]] && ! /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true >/dev/null 2>&1; }; then
+    export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/tmp/clang-module-cache}"
+    export SWIFTPM_MODULECACHE_OVERRIDE="${SWIFTPM_MODULECACHE_OVERRIDE:-/tmp/swiftpm-module-cache}"
+    swift_extra_flags+=(--disable-sandbox)
+fi
+
+docc_tmp="$(mktemp -d /tmp/rigging-docc.XXXXXX)"
+cleanup() {
+    rm -rf "$docc_tmp"
+}
+trap cleanup EXIT
+
+echo "🔍 [1/3] Building Rigging + tests with strict Swift 6 concurrency (-warnings-as-errors)..."
+swift build "${swift_extra_flags[@]+"${swift_extra_flags[@]}"}" --build-tests -Xswiftc -warnings-as-errors
+
+echo "🧪 [2/3] Running parallel Swift Testing suite..."
+swift test "${swift_extra_flags[@]+"${swift_extra_flags[@]}"}" --parallel
+
+echo "📚 [3/3] Validating multi-module DocC catalogs (--warnings-as-errors)..."
+swift package "${swift_extra_flags[@]+"${swift_extra_flags[@]}"}" \
+    --allow-writing-to-directory "$docc_tmp" \
+    generate-documentation \
+    --target Rigging \
+    --target RiggingCore \
+    --target RiggingOnePassword \
+    --target RiggingKeychain \
+    --target RiggingBitwarden \
+    --target RiggingUnixPass \
+    --target RiggingArgumentParser \
+    --target RiggingSwiftConfiguration \
+    --target RiggingTOML \
+    --target RiggingYAML \
+    --target RiggingTesting \
+    --warnings-as-errors \
+    --output-path "$docc_tmp"
+
+echo "✅ [Rigging pre-push] All build, test, and DocC checks passed."

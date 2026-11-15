@@ -112,14 +112,18 @@ public struct UnixPassProvider: SecretProvider, Sendable {
                 if let storeOverride, !storeOverride.isEmpty {
                     callEnvironment["PASSWORD_STORE_DIR"] = storeOverride
                 }
-                let fetched = await Result {
-                    try await fetchPassEntry(
+                let fetched: Result<String, any Error>
+                do {
+                    let value = try await fetchPassEntry(
                         entryPath: item.ref.entryPath,
                         reference: item.reference,
                         executablePath: resolvedBinaryPath,
                         environment: callEnvironment,
                         context: context
                     )
+                    fetched = .success(value)
+                } catch {
+                    fetched = .failure(error)
                 }
                 entryCache[cacheKey] = fetched
                 rawEntryResult = fetched
