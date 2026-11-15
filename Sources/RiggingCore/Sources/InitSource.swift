@@ -1,19 +1,36 @@
 import Foundation
 
-/// Highest-priority configuration source translating explicit programmatic values and non-nil
-/// CLI argument overrides into a `RawConfigTree` without clobbering lower layers on `nil`.
+/// Highest-precedence configuration source applying explicit programmatic values and non-`nil`
+/// command-line flag overrides without clobbering lower-priority sources when values are unset.
+///
+/// `InitSource` merges its own ``overrides`` first and then applies ``SettingsContext/cliOverrides``
+/// so explicit command-line flags take precedence over programmatic defaults while preserving
+/// displaced origins in ``RawNode/overriddenOrigins``.
+///
+/// ```swift
+/// let source = InitSource(overrides: [
+///     .cli(flag: "--port", keyPath: ["port"], value: .int(9090)),
+/// ])
+/// ```
 public struct InitSource: SettingsSource, Sendable {
+    /// Programmatic or CLI setting overrides owned directly by this source instance.
     public let overrides: [SettingOverride]
 
+    /// Human-readable name identifying this source in diagnostics (`"InitSource"`).
     public var sourceName: String { "InitSource" }
 
-    /// Creates an `InitSource` backed by explicit overrides merged with `context.cliOverrides`.
+    /// Creates an initialization source backed by explicit setting overrides.
+    ///
+    /// - Parameter overrides: Ordered overrides applied before ``SettingsContext/cliOverrides``.
     public init(overrides: [SettingOverride] = []) {
         self.overrides = overrides
     }
 
-    /// Creates an `InitSource` from top-level key/value pairs, omitting any `nil` entries so
-    /// unset optional parameters never clobber lower-priority configuration layers.
+    /// Creates an initialization source from top-level key-value pairs, omitting any `nil` entries.
+    ///
+    /// - Parameter values: Dictionary of top-level field names to optional ``RawValue`` payloads.
+    ///   Entries whose value is `nil` are ignored so unset optional flags never shadow `.env` or
+    ///   environment variables.
     public init(values: [String: RawValue?]) {
         var collected: [SettingOverride] = []
         for key in values.keys.sorted() {
@@ -24,7 +41,9 @@ public struct InitSource: SettingsSource, Sendable {
         self.overrides = collected
     }
 
-    /// Creates an `InitSource` from nested key-path overrides, omitting any `nil` entries.
+    /// Creates an initialization source from hierarchical key-path overrides, omitting any `nil` entries.
+    ///
+    /// - Parameter keyPathValues: Dictionary mapping hierarchical key paths to optional ``RawValue`` payloads.
     public init(keyPathValues: [[String]: RawValue?]) {
         let sortedKeys = keyPathValues.keys.sorted {
             $0.joined(separator: ".") < $1.joined(separator: ".")
@@ -38,7 +57,13 @@ public struct InitSource: SettingsSource, Sendable {
         self.overrides = collected
     }
 
-    /// Helper that builds a `.cliArgument` override only when `value` is non-nil.
+    /// Constructs a ``SettingOrigin/cliArgument(flag:)`` override only when `value` is non-`nil`.
+    ///
+    /// - Parameters:
+    ///   - flag: Command-line flag name (for example, `"--timeout"`).
+    ///   - keyPath: Target setting key path.
+    ///   - value: Parsed raw CLI value, or `nil` when the flag was not supplied on the command line.
+    /// - Returns: A ``SettingOverride`` when `value` is non-`nil`, or `nil` otherwise.
     public static func optionalCLI(
         flag: String,
         keyPath: [String],
@@ -48,7 +73,12 @@ public struct InitSource: SettingsSource, Sendable {
         return .cli(flag: flag, keyPath: keyPath, value: value)
     }
 
-    /// Helper that builds an `.initOverride` only when `value` is non-nil.
+    /// Constructs a ``SettingOrigin/initOverride(keyPath:)`` override only when `value` is non-`nil`.
+    ///
+    /// - Parameters:
+    ///   - keyPath: Target setting key path.
+    ///   - value: Explicit raw override value, or `nil` when unset.
+    /// - Returns: A ``SettingOverride`` when `value` is non-`nil`, or `nil` otherwise.
     public static func optionalInit(
         keyPath: [String],
         value: RawValue?
@@ -57,6 +87,12 @@ public struct InitSource: SettingsSource, Sendable {
         return .initValue(keyPath: keyPath, value: value)
     }
 
+    /// Loads programmatic ``overrides`` followed by ``SettingsContext/cliOverrides`` into a ``RawConfigTree``.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration controlling key case sensitivity.
+    ///   - context: Execution context containing CLI argument overrides.
+    /// - Returns: A ``RawConfigTree`` populated with `.initOverride` and `.cliArgument` nodes.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext

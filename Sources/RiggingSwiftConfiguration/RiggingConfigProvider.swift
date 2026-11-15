@@ -4,27 +4,52 @@ import RiggingCore
 
 // MARK: - Conversion Errors
 
-/// Errors thrown when `RiggingConfigProvider` cannot coerce a stored setting value to a requested `ConfigType`.
-public enum RiggingConfigProviderError: Error, Sendable, Equatable, CustomStringConvertible {
+/// Errors thrown when ``RiggingConfigProvider`` or ``RiggingConfigSnapshot`` cannot coerce a
+/// stored setting value to a requested `Configuration.ConfigType`.
+public enum RiggingConfigProviderError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
+    /// Indicates that the setting value stored at `key` cannot be converted to `requestedType`.
     case valueNotConvertible(key: String, requestedType: ConfigType)
 
+    /// Human-readable error message naming the configuration key and target `ConfigType`.
     public var description: String {
         switch self {
         case .valueNotConvertible(let key, let requestedType):
             return "Configuration value for key '\(key)' cannot be converted to '\(requestedType.rawValue)'."
         }
     }
+
+    /// Localized error description matching ``description`` for `LocalizedError` consumers.
+    public var errorDescription: String? {
+        description
+    }
 }
 
 // MARK: - Direction B: `RiggingConfigProvider` & `RiggingConfigSnapshot`
 
-/// Immutable `Configuration.ConfigSnapshot` backed by a validated, secret-resolved `Rigging` settings value.
+/// An immutable `Configuration.ConfigSnapshot` backed by a validated, secret-resolved Rigging settings value.
+///
+/// Every `@SecretSetting` property—as well as any entry flagged `isSecret` in `ProvenanceReport`—is
+/// returned as `ConfigValue(..., isSecret: true)` so `swift-configuration` access loggers and tracers
+/// automatically redact sensitive values.
 public struct RiggingConfigSnapshot: ConfigSnapshot, Sendable {
+    /// Human-readable name identifying the originating ``RiggingConfigProvider``.
     public let providerName: String
     fileprivate let entriesByExactPath: [[String]: StoredSettingEntry]
     fileprivate let canonicalPathByNormalized: [[String]: [String]]
     fileprivate let caseSensitive: Bool
 
+    /// Looks up a configuration value in the snapshot and coerces it to `type`.
+    ///
+    /// Lookup supports canonical `camelCase` paths as well as idiomatic `swift-configuration`
+    /// `kebab-case` and `snake_case` key segments (for example, `["signing", "team-id"]` matches
+    /// `signing.teamId`).
+    ///
+    /// - Parameters:
+    ///   - key: Absolute configuration key path to look up.
+    ///   - type: Expected `Configuration.ConfigType` representation.
+    /// - Returns: A `LookupResult` containing the coerced `ConfigValue` (with `isSecret` preserved) or `nil` if unset.
+    /// - Throws: ``RiggingConfigProviderError/valueNotConvertible(key:requestedType:)`` when a value exists at `key`
+    ///   but cannot be coerced to `type`.
     public func value(
         forKey key: AbsoluteConfigKey,
         type: ConfigType
@@ -54,19 +79,42 @@ public struct RiggingConfigSnapshot: ConfigSnapshot, Sendable {
 
     static func normalizePath(_ path: [String], caseSensitive: Bool) -> [String] {
         path.map { segment in
-            let condensed = segment
-                .replacingOccurrences(of: "-", with: "")
-                .replacingOccurrences(of: "_", with: "")
-            return caseSensitive ? condensed : condensed.lowercased()
+            if !caseSensitive {
+                return segment
+                    .replacingOccurrences(of: "-", with: "")
+                    .replacingOccurrences(of: "_", with: "")
+                    .lowercased()
+            }
+            guard segment.contains("-") || segment.contains("_") else {
+                return segment
+            }
+            let parts = segment.split(whereSeparator: { $0 == "-" || $0 == "_" })
+            guard let first = parts.first else {
+                return segment
+            }
+            let allUppercase = parts.allSatisfy { part in
+                part.unicodeScalars.allSatisfy { !CharacterSet.lowercaseLetters.contains($0) }
+            }
+            if allUppercase {
+                return parts.joined()
+            }
+            var camel = String(first)
+            for part in parts.dropFirst() {
+                guard let head = part.first else { continue }
+                camel += String(head).uppercased() + part.dropFirst()
+            }
+            return camel
         }
     }
 }
 
 extension RiggingConfigSnapshot: CustomStringConvertible, CustomDebugStringConvertible {
+    /// Concise summary reporting the provider name and total registered key paths.
     public var description: String {
         "\(providerName)[\(entriesByExactPath.count) keys]"
     }
 
+    /// Redacted debug summary listing sorted key paths with secrets masked as `**********`.
     public var debugDescription: String {
         let sorted = entriesByExactPath.keys.sorted {
             $0.joined(separator: ".") < $1.joined(separator: ".")
@@ -80,20 +128,31 @@ extension RiggingConfigSnapshot: CustomStringConvertible, CustomDebugStringConve
     }
 }
 
-/// `Configuration.ConfigProvider` exposing a validated, secret-dereferenced `Rigging` settings
-/// model to the `apple/swift-configuration` ecosystem (`ConfigReader`, Hummingbird, gRPC, etc.).
+/// A `Configuration.ConfigProvider` that exposes a validated, secret-dereferenced Rigging settings
+/// model to the `apple/swift-configuration` ecosystem (`ConfigReader`, Hummingbird, gRPC Swift, ServiceLifecycle).
 ///
-/// Every `@SecretSetting` field (and any entry marked `isSecret` in `ProvenanceReport`) is
-/// surfaced with `ConfigValue(..., isSecret: true)` so `swift-configuration`'s `AccessReporter` /
-/// `AccessLogger` automatically redacts sensitive values in logs and traces.
+/// Every `@SecretSetting` field (and any entry marked `isSecret` in `ProvenanceReport`) is surfaced
+/// with `ConfigValue(..., isSecret: true)` so `swift-configuration`'s `AccessReporter` and `AccessLogger`
+/// automatically redact sensitive values in logs and traces.
+///
+/// ```swift
+/// let settings = try await AppSettings.load()
+/// let configReader = settings.asConfigReader()
+/// let host = configReader.string(forKey: "http.host", default: "127.0.0.1")
+/// ```
 public struct RiggingConfigProvider: ConfigProvider, Sendable {
     private let _snapshot: RiggingConfigSnapshot
 
+    /// Human-readable name of this configuration provider (for example, `"Rigging[AppSettings]"`).
     public var providerName: String {
         _snapshot.providerName
     }
 
     /// Creates a `ConfigProvider` backed by a resolved `RiggedSettings` instance.
+    ///
+    /// - Parameters:
+    ///   - settings: Validated Rigging settings value whose properties and secrets will be exposed.
+    ///   - providerName: Optional custom provider identifier; defaults to `"Rigging[<Settings>]"`.
     public init<Settings: RiggedSettings>(
         settings: Settings,
         providerName: String? = nil
@@ -105,6 +164,13 @@ public struct RiggingConfigProvider: ConfigProvider, Sendable {
         )
     }
 
+    /// Synchronously retrieves a configuration value from the underlying immutable snapshot.
+    ///
+    /// - Parameters:
+    ///   - key: Absolute configuration key path to look up.
+    ///   - type: Requested `Configuration.ConfigType`.
+    /// - Returns: A `LookupResult` with `isSecret` preserved on sensitive values.
+    /// - Throws: ``RiggingConfigProviderError/valueNotConvertible(key:requestedType:)`` when type coercion fails.
     public func value(
         forKey key: AbsoluteConfigKey,
         type: ConfigType
@@ -112,6 +178,13 @@ public struct RiggingConfigProvider: ConfigProvider, Sendable {
         try _snapshot.value(forKey: key, type: type)
     }
 
+    /// Asynchronously fetches a configuration value from the underlying snapshot.
+    ///
+    /// - Parameters:
+    ///   - key: Absolute configuration key path to look up.
+    ///   - type: Requested `Configuration.ConfigType`.
+    /// - Returns: A `LookupResult` with `isSecret` preserved on sensitive values.
+    /// - Throws: ``RiggingConfigProviderError/valueNotConvertible(key:requestedType:)`` when type coercion fails.
     nonisolated(nonsending) public func fetchValue(
         forKey key: AbsoluteConfigKey,
         type: ConfigType
@@ -119,6 +192,14 @@ public struct RiggingConfigProvider: ConfigProvider, Sendable {
         try _snapshot.value(forKey: key, type: type)
     }
 
+    /// Watches a configuration value for updates, emitting the current snapshot value immediately.
+    ///
+    /// - Parameters:
+    ///   - key: Absolute configuration key path to watch.
+    ///   - type: Requested `Configuration.ConfigType`.
+    ///   - updatesHandler: Closure receiving an async sequence of lookup results.
+    /// - Returns: The value returned by `updatesHandler`.
+    /// - Throws: Any error thrown by `updatesHandler`.
     nonisolated(nonsending) public func watchValue<Return: ~Copyable>(
         forKey key: AbsoluteConfigKey,
         type: ConfigType,
@@ -133,10 +214,18 @@ public struct RiggingConfigProvider: ConfigProvider, Sendable {
         )
     }
 
+    /// Returns an immutable point-in-time ``RiggingConfigSnapshot`` of all resolved settings.
+    ///
+    /// - Returns: An immutable `ConfigSnapshot` representing the settings instance.
     public func snapshot() -> any ConfigSnapshot {
         _snapshot
     }
 
+    /// Watches snapshots of this provider, emitting the initial ``RiggingConfigSnapshot`` immediately.
+    ///
+    /// - Parameter updatesHandler: Closure receiving an async sequence of snapshots.
+    /// - Returns: The value returned by `updatesHandler`.
+    /// - Throws: Any error thrown by `updatesHandler`.
     nonisolated(nonsending) public func watchSnapshot<Return: ~Copyable>(
         updatesHandler: nonisolated(nonsending) (_ updates: ConfigUpdatesAsyncSequence<any ConfigSnapshot, Never>) async throws -> Return
     ) async throws -> Return {
@@ -145,22 +234,33 @@ public struct RiggingConfigProvider: ConfigProvider, Sendable {
 }
 
 extension RiggingConfigProvider: CustomStringConvertible, CustomDebugStringConvertible {
+    /// Concise textual description reporting the provider name and key count.
     public var description: String { _snapshot.description }
+
+    /// Redacted debug description listing key-value summaries with all secrets masked.
     public var debugDescription: String { _snapshot.debugDescription }
 }
 
 // MARK: - `RiggedSettings` Convenience Extensions
 
 extension RiggedSettings {
-    /// Exposes this validated, secret-resolved `Rigging` settings instance as an
-    /// `apple/swift-configuration` `ConfigProvider`, preserving `isSecret: true` on all
+    /// Exposes this validated, secret-resolved Rigging settings instance as an
+    /// `apple/swift-configuration` ``RiggingConfigProvider``, preserving `isSecret: true` on all
     /// `@SecretSetting` fields.
+    ///
+    /// - Parameter providerName: Optional custom provider name; defaults to `"Rigging[<Self>]"`.
+    /// - Returns: A ``RiggingConfigProvider`` backed by an immutable snapshot of `self`.
     public func asConfigProvider(providerName: String? = nil) -> RiggingConfigProvider {
         RiggingConfigProvider(settings: self, providerName: providerName)
     }
 
-    /// Exposes this validated, secret-resolved `Rigging` settings instance as a standard
-    /// `Configuration.ConfigReader` ready for downstream Swift Server components.
+    /// Exposes this validated, secret-resolved Rigging settings instance as a `Configuration.ConfigReader`
+    /// ready for downstream Swift server libraries.
+    ///
+    /// - Parameters:
+    ///   - providerName: Optional custom provider name; defaults to `"Rigging[<Self>]"`.
+    ///   - accessReporter: Optional `Configuration.AccessReporter` receiving redacted access events.
+    /// - Returns: A `ConfigReader` backed by ``asConfigProvider(providerName:)``.
     public func asConfigReader(
         providerName: String? = nil,
         accessReporter: (any AccessReporter)? = nil
@@ -307,7 +407,7 @@ struct StoredSettingEntry: @unchecked Sendable {
             return String(bytes: bytes, encoding: .utf8) ?? Data(bytes).base64EncodedString()
         }
         if let decimal = value as? Decimal {
-            return NSDecimalNumber(decimal: decimal).stringValue
+            return decimal.description
         }
         let mirror = Mirror(reflecting: value)
         if mirror.displayStyle == .enum {
@@ -343,7 +443,7 @@ struct StoredSettingEntry: @unchecked Sendable {
     private func coerceDouble(from value: Any) -> Double? {
         if let d = value as? Double { return d }
         if let f = value as? Float { return Double(f) }
-        if let dec = value as? Decimal { return NSDecimalNumber(decimal: dec).doubleValue }
+        if let dec = value as? Decimal { return Double(dec.description) }
         if let duration = value as? Duration {
             let (seconds, attoseconds) = duration.components
             return Double(seconds) + (Double(attoseconds) / 1e18)
@@ -601,7 +701,9 @@ enum SettingsSnapshotBuilder {
                 continue
             }
 
-            let isMarkedSecret = secretPaths.contains(path)
+            let containsSecretElement = (valueMirror.displayStyle == .collection || valueMirror.displayStyle == .set)
+                && valueMirror.children.contains { $0.value is any ExposedSecretBox }
+            let isMarkedSecret = secretPaths.contains(path) || containsSecretElement
             register(
                 path,
                 StoredSettingEntry(

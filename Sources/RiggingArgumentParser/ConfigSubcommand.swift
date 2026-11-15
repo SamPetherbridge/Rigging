@@ -4,12 +4,35 @@ import RiggingCore
 
 // MARK: - Execution Result
 
-/// Captured output and exit status from executing a `ConfigSubcommand` operation.
+/// Captured standard output, standard error, and exit status from executing a ``ConfigSubcommand`` leaf command.
+///
+/// Use ``ConfigSubcommand/execute(arguments:context:overrides:)`` in automated tests to inspect
+/// human-readable or `--json` output and assert semantic exit codes (`0`, `2`, `4`, `6`) without
+/// terminating the test runner process.
+///
+/// ```swift
+/// let result = try await ConfigSubcommand<AppSettings>.execute(
+///     arguments: ["doctor", "--json"],
+///     context: .inMemory(environment: ["APP_HOST": "localhost"])
+/// )
+/// assert(result.exitCode == 0)
+/// ```
 public struct ConfigCommandExecutionResult: Sendable, Equatable {
+    /// Redacted text written to standard output (`stdout`).
     public let stdout: String
+
+    /// Redacted diagnostic text written to standard error (`stderr`).
     public let stderr: String
+
+    /// Semantic CLI exit status (`0` on success, `2` on invalid configuration, `4` on unsafe secret storage, `6` on secret provider failure).
     public let exitCode: Int32
 
+    /// Creates a captured command execution result.
+    ///
+    /// - Parameters:
+    ///   - stdout: Text destined for standard output.
+    ///   - stderr: Text destined for standard error.
+    ///   - exitCode: Process exit code (`0` indicates success).
     public init(stdout: String = "", stderr: String = "", exitCode: Int32 = 0) {
         self.stdout = stdout
         self.stderr = stderr
@@ -17,9 +40,16 @@ public struct ConfigCommandExecutionResult: Sendable, Equatable {
     }
 }
 
-/// Protocol implemented by operational `ConfigSubcommand` leaves supporting hermetic execution
-/// against an explicit `SettingsContext`.
+/// A protocol implemented by operational ``ConfigSubcommand`` leaf commands that support hermetic
+/// execution against an injected `SettingsContext`.
 public protocol ConfigSubcommandExecutable: AsyncParsableCommand {
+    /// Executes the subcommand against an explicit `SettingsContext` and returns captured output and exit status.
+    ///
+    /// - Parameters:
+    ///   - context: Execution context providing environment variables, filesystem access, secret providers, and redaction.
+    ///   - overrides: Explicit setting overrides merged at highest precedence.
+    /// - Returns: Captured ``ConfigCommandExecutionResult`` with redacted `stdout`, `stderr`, and semantic `exitCode`.
+    /// - Throws: `ValidationError` for mutually exclusive CLI flags or unexpected encoding errors.
     func execute(
         context: SettingsContext,
         overrides: [SettingOverride]
@@ -28,20 +58,30 @@ public protocol ConfigSubcommandExecutable: AsyncParsableCommand {
 
 // MARK: - Turnkey Operational `config` Subcommand Group
 
-/// Turnkey operational `config` subcommand group (`show`, `doctor`, `schema`, `init`) for any
-/// `RiggedSettings` model.
+/// A turnkey operational `config` subcommand group (`show`, `doctor`, `schema`, `init`) parameterized
+/// over any `RiggedSettings` model.
 ///
-/// Mount directly in a root `ParsableCommand` / `AsyncParsableCommand`:
+/// Mount ``ConfigSubcommand`` directly in your root `ParsableCommand` or `AsyncParsableCommand`
+/// `subcommands` array to give operators immediate configuration introspection, health diagnostics,
+/// JSON Schema export, and starter file scaffolding:
+///
 /// ```swift
-/// static let configuration = CommandConfiguration(
-///     commandName: "my-cli",
-///     subcommands: [
-///         RunCommand.self,
-///         ConfigSubcommand<AppSettings>.self,
-///     ]
-/// )
+/// @main
+/// struct MyCLI: AsyncParsableCommand {
+///     static let configuration = CommandConfiguration(
+///         commandName: "my-cli",
+///         subcommands: [
+///             ServeCommand.self,
+///             ConfigSubcommand<AppSettings>.self,
+///         ]
+///     )
+/// }
 /// ```
+///
+/// Every subcommand scrubs output through `DiagnosticRedactor` and replaces `@SecretSetting` values
+/// with `"**********"`, ensuring plaintext secrets never appear on `stdout` or `stderr`—even when `--json` is enabled.
 public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
+    /// Command configuration registering the `show`, `doctor`, `schema`, and `init` subcommands under `config`.
     public static var configuration: CommandConfiguration {
         CommandConfiguration(
             commandName: "config",
@@ -55,10 +95,18 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
         )
     }
 
+    /// Creates an empty `config` command group instance for `ArgumentParser` routing.
     public init() {}
 
     /// Parses and executes a `config` subcommand invocation (`["show", "--json"]`, `["doctor"]`,
     /// `["schema"]`, `["init", "--dotenv"]`) hermetically against `context`.
+    ///
+    /// - Parameters:
+    ///   - arguments: Raw CLI arguments following `config` (for example, `["doctor", "--json"]`).
+    ///   - context: Execution context providing environment variables, filesystem access, and secret providers.
+    ///   - overrides: Additional setting overrides applied at CLI precedence.
+    /// - Returns: A ``ConfigCommandExecutionResult`` containing redacted `stdout`, `stderr`, and semantic `exitCode`.
+    /// - Throws: `ArgumentParser` parsing/validation errors when invalid CLI flags are supplied.
     public static func execute(
         arguments: [String],
         context: SettingsContext = SettingsContext(),
@@ -79,7 +127,9 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
 
     // MARK: - `config show`
 
+    /// Displays effective resolved settings and per-field provenance with all secrets redacted.
     public struct Show: ConfigSubcommandExecutable {
+        /// Command configuration for `config show`.
         public static var configuration: CommandConfiguration {
             CommandConfiguration(
                 commandName: "show",
@@ -87,19 +137,32 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
             )
         }
 
+        /// Outputs resolved settings, provenance origins, and displaced sources as deterministic sorted-key JSON.
         @Flag(name: .long, help: "Output resolved settings and provenance as deterministic JSON.")
         public var json: Bool = false
 
+        /// Active configuration profile override applied at CLI precedence (`--profile <name>`).
         @Option(name: .long, help: "Active configuration profile override.")
         public var profile: String?
 
+        /// Creates a `config show` command instance.
         public init() {}
 
+        /// Executes `config show` against the live process environment and exits with a semantic status code on failure.
+        ///
+        /// - Throws: `ExitCode` (`2`, `4`, or `6`) when configuration loading or validation fails.
         public mutating func run() async throws {
             let result = try await execute(context: SettingsContext(), overrides: [])
             try ConfigSubcommandIO.emitAndExitIfNeeded(result)
         }
 
+        /// Executes `config show` hermetically against `context` and returns redacted output and exit status.
+        ///
+        /// - Parameters:
+        ///   - context: Execution context providing environment, filesystem, secret providers, and redactor.
+        ///   - overrides: Explicit setting overrides merged alongside `--profile`.
+        /// - Returns: Redacted table or JSON output and semantic exit status (`0`, `2`, `4`, or `6`).
+        /// - Throws: Unexpected JSON encoding errors.
         public func execute(
             context: SettingsContext = SettingsContext(),
             overrides: [SettingOverride] = []
@@ -134,7 +197,10 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
                     }
                     return ConfigCommandExecutionResult(stdout: output, exitCode: 0)
                 }
-            } catch let validationError as SettingsValidationError {
+            } catch {
+                guard let validationError = ConfigSubcommandIO.coerceValidationError(error, redactor: context.redactor) else {
+                    throw error
+                }
                 if json {
                     let data = validationError.jsonPayload(prettyPrinted: true, redactor: context.redactor)
                     let text = context.redactor.scrub(String(decoding: data, as: UTF8.self))
@@ -166,7 +232,16 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
 
     // MARK: - `config doctor`
 
+    /// Validates configuration syntax, schema constraints, file permissions, deprecated settings,
+    /// and secret provider reachability without exposing plaintext secret values.
+    ///
+    /// Semantic exit codes:
+    /// - `0`: Configuration is healthy (may include non-fatal warnings).
+    /// - `2`: Invalid configuration syntax, type mismatch, missing required setting, or unknown key.
+    /// - `4`: Unsafe secret storage (for example, a literal secret committed to a git-tracked project config file).
+    /// - `6`: Secret provider unreachable, locked, or missing referenced secret item.
     public struct Doctor: ConfigSubcommandExecutable {
+        /// Command configuration for `config doctor`.
         public static var configuration: CommandConfiguration {
             CommandConfiguration(
                 commandName: "doctor",
@@ -174,19 +249,32 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
             )
         }
 
+        /// Outputs the health report, issues, and warnings as deterministic sorted-key JSON.
         @Flag(name: .long, help: "Output health report and structured issues as deterministic JSON.")
         public var json: Bool = false
 
+        /// Active configuration profile override applied at CLI precedence (`--profile <name>`).
         @Option(name: .long, help: "Active configuration profile override.")
         public var profile: String?
 
+        /// Creates a `config doctor` command instance.
         public init() {}
 
+        /// Executes `config doctor` against the live process environment and exits with status `0`, `2`, `4`, or `6`.
+        ///
+        /// - Throws: `ExitCode` (`2`, `4`, or `6`) when configuration health checks fail.
         public mutating func run() async throws {
             let result = try await execute(context: SettingsContext(), overrides: [])
             try ConfigSubcommandIO.emitAndExitIfNeeded(result)
         }
 
+        /// Executes `config doctor` hermetically against `context` and returns redacted diagnostics and exit status.
+        ///
+        /// - Parameters:
+        ///   - context: Execution context providing environment, filesystem, secret providers, and redactor.
+        ///   - overrides: Explicit setting overrides merged alongside `--profile`.
+        /// - Returns: Redacted health report and semantic exit status (`0`, `2`, `4`, or `6`).
+        /// - Throws: Unexpected JSON encoding errors.
         public func execute(
             context: SettingsContext = SettingsContext(),
             overrides: [SettingOverride] = []
@@ -248,7 +336,10 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
                         exitCode: 0
                     )
                 }
-            } catch let validationError as SettingsValidationError {
+            } catch {
+                guard let validationError = ConfigSubcommandIO.coerceValidationError(error, redactor: context.redactor) else {
+                    throw error
+                }
                 let combinedWarnings = Self.deduplicateIssues(
                     validationError.warnings + preflightWarnings
                 )
@@ -303,7 +394,9 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
 
     // MARK: - `config schema`
 
+    /// Exports a JSON Schema (Draft 2020-12) document describing `Settings` for editor autocomplete and CI validation.
     public struct Schema: ConfigSubcommandExecutable {
+        /// Command configuration for `config schema`.
         public static var configuration: CommandConfiguration {
             CommandConfiguration(
                 commandName: "schema",
@@ -311,19 +404,31 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
             )
         }
 
+        /// Emits compact single-line JSON Schema instead of pretty-printed JSON.
         @Flag(name: .long, help: "Output compact single-line JSON Schema.")
         public var compact: Bool = false
 
+        /// Optional custom title overriding the root JSON Schema `"title"` property.
         @Option(name: .long, help: "Override the root JSON Schema title.")
         public var title: String?
 
+        /// Creates a `config schema` command instance.
         public init() {}
 
+        /// Prints the generated JSON Schema to standard output.
+        ///
+        /// - Throws: `ExitCode` if output emission fails.
         public mutating func run() async throws {
             let result = try await execute(context: SettingsContext(), overrides: [])
             try ConfigSubcommandIO.emitAndExitIfNeeded(result)
         }
 
+        /// Generates the JSON Schema string for `Settings` and returns it in ``ConfigCommandExecutionResult/stdout``.
+        ///
+        /// - Parameters:
+        ///   - context: Execution context (unused by static schema generation, accepted for protocol conformance).
+        ///   - overrides: Setting overrides (unused by static schema generation).
+        /// - Returns: Execution result containing the Draft 2020-12 JSON Schema with `exitCode == 0`.
         public func execute(
             context: SettingsContext = SettingsContext(),
             overrides: [SettingOverride] = []
@@ -338,7 +443,9 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
 
     // MARK: - `config init`
 
+    /// Generates a commented `.env` template or starter JSON configuration file using safe secret placeholders.
     public struct Init: ConfigSubcommandExecutable {
+        /// Command configuration for `config init`.
         public static var configuration: CommandConfiguration {
             CommandConfiguration(
                 commandName: "init",
@@ -346,25 +453,41 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
             )
         }
 
+        /// Emits a commented `.env` template documenting environment variable names, help text, and defaults.
         @Flag(name: .long, help: "Generate a commented .env template.")
         public var dotenv: Bool = false
 
+        /// Emits a starter JSON configuration file using `op://...` placeholders for `@SecretSetting` fields.
         @Flag(name: .long, help: "Generate a starter JSON configuration file.")
         public var json: Bool = false
 
+        /// Creates a `config init` command instance.
         public init() {}
 
+        /// Validates that `--dotenv` and `--json` are not passed simultaneously.
+        ///
+        /// - Throws: `ValidationError` when both `--dotenv` and `--json` are set.
         public mutating func validate() throws {
             if dotenv && json {
                 throw ValidationError("Specify either --dotenv or --json, not both.")
             }
         }
 
+        /// Generates the requested starter template and prints it to standard output.
+        ///
+        /// - Throws: `ValidationError` when mutually exclusive flags are supplied.
         public mutating func run() async throws {
             let result = try await execute(context: SettingsContext(), overrides: [])
             try ConfigSubcommandIO.emitAndExitIfNeeded(result)
         }
 
+        /// Generates the starter `.env` or JSON configuration template and returns it in ``ConfigCommandExecutionResult/stdout``.
+        ///
+        /// - Parameters:
+        ///   - context: Execution context (accepted for protocol conformance).
+        ///   - overrides: Setting overrides (accepted for protocol conformance).
+        /// - Returns: Execution result containing the generated starter template with `exitCode == 0`.
+        /// - Throws: `ValidationError` when both `--dotenv` and `--json` are `true`.
         public func execute(
             context: SettingsContext = SettingsContext(),
             overrides: [SettingOverride] = []
@@ -388,7 +511,7 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
     }
 }
 
-/// Alias matching Section 6.6 naming (`SettingsCommandGroup<MySettings>`).
+/// A type alias for ``ConfigSubcommand`` matching the `SettingsCommandGroup<MySettings>` naming convention.
 public typealias SettingsCommandGroup<Settings: RiggedSettings> = ConfigSubcommand<Settings>
 
 // MARK: - JSON Envelopes & Helpers
@@ -772,6 +895,35 @@ enum StarterJSONGenerator {
 // MARK: - Terminal I/O Helper
 
 enum ConfigSubcommandIO {
+    static func coerceValidationError(
+        _ error: any Error,
+        redactor: DiagnosticRedactor
+    ) -> SettingsValidationError? {
+        if let validationError = error as? SettingsValidationError {
+            return validationError
+        }
+        if let parseError = error as? ConfigFileParseError {
+            let issue = ValidationIssue(
+                keyPath: [parseError.path],
+                kind: .invalidValue,
+                message: redactor.scrub(parseError.description),
+                origin: .customSource(name: parseError.format, detail: parseError.path)
+            )
+            return SettingsValidationError(issues: [issue], warnings: [], redactor: redactor)
+        }
+        if let dotEnvError = error as? DotEnvParseError {
+            let pathLabel = dotEnvError.path ?? ".env"
+            let issue = ValidationIssue(
+                keyPath: [pathLabel],
+                kind: .invalidValue,
+                message: redactor.scrub(dotEnvError.description),
+                origin: .dotEnv(path: pathLabel, line: dotEnvError.line, variable: "")
+            )
+            return SettingsValidationError(issues: [issue], warnings: [], redactor: redactor)
+        }
+        return nil
+    }
+
     static func emitAndExitIfNeeded(_ result: ConfigCommandExecutionResult) throws {
         if !result.stdout.isEmpty {
             print(result.stdout)

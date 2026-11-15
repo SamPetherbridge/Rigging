@@ -3,23 +3,39 @@ import Foundation
 import CoreFoundation
 #endif
 
-/// Reads enterprise MDM / managed preferences on macOS via `CFPreferencesCopyAppValue`
-/// (emitting `.managedPolicy(domain:key:)`), while compiling cleanly as a no-op or injectable
-/// mock dictionary on non-macOS platforms for cross-platform parity and deterministic testing.
+/// Loads enterprise MDM and managed preference policies on macOS via `CFPreferences`, while
+/// compiling cleanly as a deterministic mockable or no-op source on Linux and non-macOS Apple platforms.
+///
+/// When ``keys`` is `nil` on macOS, `ManagedPreferencesSource` discovers preference keys for the
+/// configured domain and restricts results by default to MDM-forced keys (`CFPreferencesAppValueIsForced`)
+/// so ordinary `UserDefaults` values do not masquerade as managed policy.
+///
+/// ```swift
+/// let source = ManagedPreferencesSource(domain: "com.example.asc")
+/// ```
 public struct ManagedPreferencesSource: SettingsSource, Sendable {
-    /// Optional preference domain (falls back to `configuration.managedPreferencesDomain`).
+    /// Optional preference domain overriding ``SettingsConfiguration/managedPreferencesDomain`` (for example, `"com.example.asc"`).
     public let domain: String?
-    /// Optional explicit preference keys to query. When `nil` on macOS, forced MDM keys for `domain`
-    /// are discovered automatically.
+
+    /// Optional explicit preference keys to query instead of discovering all keys in `domain`.
     public let keys: [String]?
-    /// When `true`, only keys where `CFPreferencesAppValueIsForced` returns `true` are loaded.
-    /// Defaults to `false` when explicit `keys` are provided, and `true` when discovering all keys.
+
+    /// Whether only MDM-forced keys (`CFPreferencesAppValueIsForced`) are loaded.
     public let requireForced: Bool?
-    /// Optional injectable mock policy values for unit tests and non-macOS parity.
+
+    /// Optional injectable mock dictionary for deterministic unit tests across all platforms.
     public let mockValues: [String: RawValue]?
 
+    /// Human-readable name identifying this source in diagnostics (`"ManagedPreferencesSource"`).
     public var sourceName: String { "ManagedPreferencesSource" }
 
+    /// Creates a managed preferences configuration source.
+    ///
+    /// - Parameters:
+    ///   - domain: Optional reverse-DNS preference domain overriding ``SettingsConfiguration/managedPreferencesDomain``.
+    ///   - keys: Optional explicit preference keys to query.
+    ///   - requireForced: When `true`, loads only MDM-forced keys; defaults to `true` when `keys` is `nil` and `false` otherwise.
+    ///   - mockValues: Optional mock policy dictionary used in tests on any platform.
     public init(
         domain: String? = nil,
         keys: [String]? = nil,
@@ -32,6 +48,13 @@ public struct ManagedPreferencesSource: SettingsSource, Sendable {
         self.mockValues = mockValues
     }
 
+    /// Reads managed preference entries into a ``RawConfigTree``.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration providing `managedPreferencesDomain` and key-splitting rules.
+    ///   - context: Execution context for the load pass.
+    /// - Returns: A ``RawConfigTree`` tagged with ``SettingOrigin/managedPolicy(domain:key:)`` provenance,
+    ///   or ``RawConfigTree/empty`` on platforms without macOS `CFPreferences`.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -106,8 +129,6 @@ public struct ManagedPreferencesSource: SettingsSource, Sendable {
             enforceForced = requireForced ?? false
         } else {
             candidateKeys = Self.discoverPreferenceKeys(forDomain: cfDomain)
-            // When no explicit key list is provided, default to MDM-forced keys only so
-            // ordinary UserDefaults entries do not masquerade as enterprise policy.
             enforceForced = requireForced ?? true
         }
 

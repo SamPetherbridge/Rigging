@@ -1,17 +1,35 @@
 import Foundation
 
-/// Built-in `SecretProvider` resolving indirect `env://<VAR_NAME>` references against `SettingsContext.environment`.
+/// Built-in ``SecretProvider`` resolving indirect `env://<VAR_NAME>` references from ``SettingsContext/environment``.
 ///
-/// Useful when a configuration file (such as `.asc.json` or `~/.config/app/config.json`) delegates secret lookup
-/// to a named environment variable (`"apiKey": "env://PROD_API_KEY"`).
+/// Use `env://` references inside JSON or `.env` configuration files (for example,
+/// `"apiKey": "env://PROD_API_KEY"`) to delegate secret lookup to a process environment variable
+/// without committing literal secret material to version control.
+///
+/// ```swift
+/// let provider = IndirectEnvProvider()
+/// ```
 public struct IndirectEnvProvider: SecretProvider, Sendable {
+    /// Supported URI schemes (`["env"]`).
     public let supportedSchemes: Set<String> = ["env"]
+
+    /// Whether an empty string (`""`) is accepted instead of throwing ``SecretResolutionError/environmentVariableNotSet(variableName:)``.
     public let allowEmptyValue: Bool
 
+    /// Creates an indirect environment-variable secret provider.
+    ///
+    /// - Parameter allowEmptyValue: Pass `true` to accept empty environment variable values; defaults to `false`.
     public init(allowEmptyValue: Bool = false) {
         self.allowEmptyValue = allowEmptyValue
     }
 
+    /// Resolves a batch of `env://` secret references against ``SettingsContext/environment``.
+    ///
+    /// - Parameters:
+    ///   - references: Deduplicated ``SecretReference`` items to look up.
+    ///   - context: Execution context providing the environment dictionary and ``DiagnosticRedactor``.
+    /// - Returns: Dictionary mapping each resolved ``SecretReference`` to UTF-8 `Data`.
+    /// - Throws: ``SecretResolutionError/environmentVariableNotSet(variableName:)`` or ``SecretBatchPartialFailureError``.
     public func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
@@ -57,6 +75,10 @@ public struct IndirectEnvProvider: SecretProvider, Sendable {
 }
 
 extension SecretProvider where Self == IndirectEnvProvider {
+    /// Creates an indirect environment-variable ``IndirectEnvProvider``.
+    ///
+    /// - Parameter allowEmptyValue: Whether empty environment variable strings are accepted.
+    /// - Returns: Configured ``IndirectEnvProvider``.
     public static func env(allowEmptyValue: Bool = false) -> IndirectEnvProvider {
         IndirectEnvProvider(allowEmptyValue: allowEmptyValue)
     }

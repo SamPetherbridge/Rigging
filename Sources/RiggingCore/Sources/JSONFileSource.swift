@@ -1,45 +1,75 @@
 import Foundation
-#if canImport(CoreFoundation)
+#if canImport(ObjectiveC)
 import CoreFoundation
 #endif
 
-/// Error thrown when a configuration file (JSON or Property List) cannot be parsed or its root
-/// value is not a key-value dictionary.
+/// An error thrown when a structured configuration file (such as JSON or Property List) fails syntax
+/// parsing or does not contain a top-level dictionary object.
 public struct ConfigFileParseError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
+    /// Filesystem path of the configuration file that failed to parse.
     public let path: String
+
+    /// Format name of the parser (for example, `"JSON"` or `"PropertyList"`).
     public let format: String
+
+    /// Underlying diagnostic message describing the failure.
     public let reason: String
 
+    /// Creates a structured configuration-file parse error.
+    ///
+    /// - Parameters:
+    ///   - path: Path to the configuration file.
+    ///   - format: Human-readable format name.
+    ///   - reason: Explanation of why parsing failed.
     public init(path: String, format: String, reason: String) {
         self.path = path
         self.format = format
         self.reason = reason
     }
 
+    /// Human-readable error message citing format, path, and failure reason.
     public var description: String {
         "Failed to parse \(format) configuration file '\(path)': \(reason)"
     }
 
+    /// Localized error description matching ``description`` for CLI error reporters.
     public var errorDescription: String? {
         description
     }
 }
 
-/// Origin classification for JSON-backed configuration files.
-public enum JSONSourceOriginStyle: Sendable, Equatable, Hashable {
+/// Classifies the ``SettingOrigin`` recorded for keys loaded from a structured configuration file.
+public enum JSONSourceOriginStyle: Sendable, Equatable, Hashable, Codable {
+    /// Emits ``SettingOrigin/projectConfig(path:keyPath:profile:)``, activating repo-committed plaintext secret guards.
     case projectConfig
+
+    /// Emits ``SettingOrigin/userConfig(path:keyPath:profile:)`` for per-user configuration files.
     case userConfig
+
+    /// Emits ``SettingOrigin/customSource(name:detail:)`` with the specified source name.
     case custom(sourceName: String)
 }
 
-/// Loads one or more JSON configuration files into a `RawConfigTree`, stripping `"$schema"` and
-/// `"profiles"` metadata keys and applying named profile overlays when active.
+/// Loads one or more JSON configuration files into a ``RawConfigTree``, stripping `$schema` and
+/// `profiles` metadata keys and overlaying named environment profiles when active.
+///
+/// ```swift
+/// let source = JSONFileSource(path: "/etc/myapp/config.json", optional: false)
+/// ```
 public struct JSONFileSource: SettingsSource, Sendable {
+    /// Ordered JSON file paths to load (later paths override earlier paths).
     public let paths: [String]
+
+    /// Whether missing files are silently skipped (`true`) or throw a file-not-found error (`false`).
     public let optional: Bool
+
+    /// Optional explicit profile name overriding ``SettingsConfiguration/profile``.
     public let profile: String?
+
+    /// Origin classification applied to keys loaded by this source.
     public let originStyle: JSONSourceOriginStyle
 
+    /// Human-readable name identifying this source in diagnostics.
     public var sourceName: String {
         switch originStyle {
         case .projectConfig:
@@ -51,6 +81,13 @@ public struct JSONFileSource: SettingsSource, Sendable {
         }
     }
 
+    /// Creates a JSON configuration source for a single file path.
+    ///
+    /// - Parameters:
+    ///   - path: Relative, tilde-prefixed, or absolute path to a JSON file.
+    ///   - optional: When `true`, missing files are ignored; when `false`, missing files throw an error.
+    ///   - profile: Optional explicit profile name to overlay from `"profiles"`.
+    ///   - originStyle: Provenance classification applied to loaded keys.
     public init(
         path: String,
         optional: Bool = true,
@@ -63,6 +100,13 @@ public struct JSONFileSource: SettingsSource, Sendable {
         self.originStyle = originStyle
     }
 
+    /// Creates a JSON configuration source for multiple file paths merged in order.
+    ///
+    /// - Parameters:
+    ///   - paths: Ordered JSON file paths where later files override earlier files.
+    ///   - optional: When `true`, missing files are ignored; when `false`, missing files throw an error.
+    ///   - profile: Optional explicit profile name to overlay from `"profiles"`.
+    ///   - originStyle: Provenance classification applied to loaded keys.
     public init(
         paths: [String],
         optional: Bool = true,
@@ -75,6 +119,14 @@ public struct JSONFileSource: SettingsSource, Sendable {
         self.originStyle = originStyle
     }
 
+    /// Loads and merges all configured JSON files into a ``RawConfigTree``.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration controlling profile selection and case sensitivity.
+    ///   - context: Execution context providing filesystem and path resolution context.
+    /// - Returns: A ``RawConfigTree`` populated from the JSON document(s) and active profile overlay.
+    /// - Throws: ``ConfigFileParseError`` if a file contains invalid JSON or a non-dictionary root,
+    ///   or `CocoaError` when ``optional`` is `false` and a file is missing.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -124,20 +176,32 @@ public struct JSONFileSource: SettingsSource, Sendable {
     }
 }
 
-/// Discovers project configuration files (`configuration.projectConfigFiles`, e.g. `[".asc.json"]`)
-/// by walking upward from `context.workingDirectory` until reaching a `.git` directory/file boundary
-/// (inclusive of the repository root) or `context.homeDirectory` (never walking above `$HOME`).
+/// Discovers and merges project-scoped JSON configuration files (such as `.asc.json`) by walking
+/// upward from ``SettingsContext/workingDirectory`` to the nearest `.git` boundary or ``SettingsContext/homeDirectory``.
+///
+/// Nearer directory configuration files take precedence over ancestor directory files, and the upward
+/// walk never traverses above ``SettingsContext/homeDirectory``. Every loaded key carries
+/// ``SettingOrigin/projectConfig(path:keyPath:profile:)`` provenance so ``SecretResolver`` automatically
+/// blocks accidental plaintext secrets committed to version control.
 public struct ProjectConfigSource: SettingsSource, Sendable {
-    /// Optional explicit filenames overriding `configuration.projectConfigFiles`.
+    /// Optional explicit filenames overriding ``SettingsConfiguration/projectConfigFiles``.
     public let fileNames: [String]?
-    /// Optional explicit profile overriding `configuration.profile` / `<ENV_PREFIX>PROFILE`.
+
+    /// Optional explicit profile name overriding ``SettingsConfiguration/profile`` and `<ENV_PREFIX>PROFILE`.
     public let profile: String?
-    /// When `true`, stops upward search at the nearest directory containing a matching config file.
-    /// Defaults to `false`, merging nearer directory configs over ancestor directory configs up to `.git`/`$HOME`.
+
+    /// When `true`, stops upward directory discovery at the nearest directory containing a matching file.
     public let stopAtFirstFound: Bool
 
+    /// Human-readable name identifying this source in diagnostics (`"ProjectConfigSource"`).
     public var sourceName: String { "ProjectConfigSource" }
 
+    /// Creates a project configuration discovery source.
+    ///
+    /// - Parameters:
+    ///   - fileNames: Optional explicit filenames overriding ``SettingsConfiguration/projectConfigFiles``.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - stopAtFirstFound: When `true`, stops at the closest matching directory instead of merging up to `.git`.
     public init(
         fileNames: [String]? = nil,
         profile: String? = nil,
@@ -148,6 +212,13 @@ public struct ProjectConfigSource: SettingsSource, Sendable {
         self.stopAtFirstFound = stopAtFirstFound
     }
 
+    /// Discovers project configuration files upward from the working directory and merges them.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration providing `projectConfigFiles`, `profile`, and `caseSensitive`.
+    ///   - context: Execution context providing `workingDirectory`, `homeDirectory`, and `fileSystem`.
+    /// - Returns: Merged ``RawConfigTree`` with ``SettingOrigin/projectConfig(path:keyPath:profile:)`` provenance.
+    /// - Throws: ``ConfigFileParseError`` if a discovered JSON file is malformed.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -232,8 +303,6 @@ public struct ProjectConfigSource: SettingsSource, Sendable {
         return merged
     }
 
-    /// Returns directories from `workingDirectory` upward, stopping inclusively at any directory
-    /// containing `.git` (directory or git-worktree file) or at `homeDirectory` (never above `$HOME`).
     static func discoverDirectories(
         workingDirectory: String,
         homeDirectory: String,
@@ -250,12 +319,10 @@ public struct ProjectConfigSource: SettingsSource, Sendable {
             visited.insert(current)
             directories.append(current)
 
-            // Stop at $HOME boundary (never walk above $HOME).
             if current == normalizedHome {
                 break
             }
 
-            // Stop at .git directory or file boundary (inclusive of repo root).
             let gitMarker = SourcePathResolver.joinPath(current, ".git")
             if fileSystem.fileExists(atPath: gitMarker) {
                 break
@@ -272,21 +339,34 @@ public struct ProjectConfigSource: SettingsSource, Sendable {
     }
 }
 
-/// Loads user-scoped JSON configuration from `$XDG_CONFIG_HOME/<xdgAppName>/config.json`
-/// (or `<homeDirectory>/.config/<xdgAppName>/config.json`), with optional macOS fallback to
-/// `<homeDirectory>/Library/Application Support/<xdgAppName>/config.json`.
+/// Loads user-scoped JSON configuration from `$XDG_CONFIG_HOME/<appName>/config.json`
+/// (or `~/.config/<appName>/config.json`) with an optional macOS `~/Library/Application Support/<appName>/config.json` fallback.
+///
+/// When both the XDG configuration file and the `Application Support` fallback exist, keys in the
+/// XDG file take higher priority while preserving displaced origins.
 public struct UserConfigSource: SettingsSource, Sendable {
-    /// Optional explicit app name overriding `configuration.xdgAppName`.
+    /// Optional application directory name overriding ``SettingsConfiguration/xdgAppName``.
     public let appName: String?
-    /// Config file name inside the user config directory (defaults to `"config.json"`).
+
+    /// File name within the user configuration directory (defaults to `"config.json"`).
     public let fileName: String
-    /// Optional explicit profile overriding `configuration.profile` / `<ENV_PREFIX>PROFILE`.
+
+    /// Optional explicit profile name overriding ``SettingsConfiguration/profile``.
     public let profile: String?
-    /// Whether to check `<homeDirectory>/Library/Application Support/<appName>/<fileName>` as a fallback.
+
+    /// Whether `~/Library/Application Support/<appName>/<fileName>` is checked as a lower-priority fallback.
     public let includeApplicationSupportFallback: Bool
 
+    /// Human-readable name identifying this source in diagnostics (`"UserConfigSource"`).
     public var sourceName: String { "UserConfigSource" }
 
+    /// Creates a user-scoped XDG JSON configuration source.
+    ///
+    /// - Parameters:
+    ///   - appName: Optional application directory name overriding ``SettingsConfiguration/xdgAppName``.
+    ///   - fileName: Configuration file name inside the directory (defaults to `"config.json"`).
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - includeApplicationSupportFallback: Whether to check `Library/Application Support` beneath `homeDirectory`.
     public init(
         appName: String? = nil,
         fileName: String = "config.json",
@@ -299,6 +379,13 @@ public struct UserConfigSource: SettingsSource, Sendable {
         self.includeApplicationSupportFallback = includeApplicationSupportFallback
     }
 
+    /// Loads user-scoped JSON configuration files into a ``RawConfigTree``.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration providing `xdgAppName`, `profile`, and `caseSensitive`.
+    ///   - context: Execution context providing `environment`, `homeDirectory`, and `fileSystem`.
+    /// - Returns: Merged ``RawConfigTree`` with ``SettingOrigin/userConfig(path:keyPath:profile:)`` provenance.
+    /// - Throws: ``ConfigFileParseError`` if an existing user configuration file contains invalid JSON.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -388,7 +475,6 @@ enum ProfileSelectionResolver {
             }
         }
 
-        // Check CLI overrides (`--profile` or keyPath `["profile"]`)
         for override in context.cliOverrides.reversed() {
             let isProfilePath = override.keyPath.count == 1
                 && RawConfigTree.keysMatch(
@@ -406,7 +492,6 @@ enum ProfileSelectionResolver {
             }
         }
 
-        // Check `<ENV_PREFIX>PROFILE` in `context.environment`
         let candidateEnvNames = profileEnvVariableNames(envPrefix: configuration.envPrefix)
         for candidate in candidateEnvNames {
             if let value = lookupEnv(
@@ -629,7 +714,6 @@ enum FoundationObjectConverter {
             rootNodes[key] = node
         }
 
-        // Normalize via RawConfigTree.set if case-insensitive collisions exist in the same dict.
         if !caseSensitive {
             var tree = RawConfigTree()
             for key in dictionary.keys.sorted() {
@@ -702,7 +786,7 @@ enum FoundationObjectConverter {
             return .string(date.ISO8601Format())
         }
 
-        #if canImport(CoreFoundation)
+        #if canImport(ObjectiveC)
         if let number = anyValue as? NSNumber {
             if CFGetTypeID(number) == CFBooleanGetTypeID() {
                 return .bool(number.boolValue)
@@ -726,15 +810,24 @@ enum FoundationObjectConverter {
         if let intVal = anyValue as? Int {
             return .int(Int64(intVal))
         }
+        if let uint64Val = anyValue as? UInt64 {
+            if uint64Val <= UInt64(Int64.max) {
+                return .int(Int64(uint64Val))
+            }
+            return .double(Double(uint64Val))
+        }
         if let doubleVal = anyValue as? Double {
             return .double(doubleVal)
         }
         if let number = anyValue as? NSNumber {
             let cType = String(cString: number.objCType)
-            if cType == "B" || cType == "c" {
+            if cType == "B" {
                 return .bool(number.boolValue)
             }
             if cType == "d" || cType == "f" {
+                return .double(number.doubleValue)
+            }
+            if cType == "Q" && number.uint64Value > UInt64(Int64.max) {
                 return .double(number.doubleValue)
             }
             return .int(number.int64Value)

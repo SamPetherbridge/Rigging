@@ -1,13 +1,24 @@
 import Foundation
 import Synchronization
 
-/// Thread-safe diagnostic redactor that tracks resolved secret plaintext and scrubs
-/// accidental occurrences from error messages, logs, and diagnostic payloads.
+/// Thread-safe diagnostic scrubber that tracks resolved secret plaintext and masks accidental
+/// occurrences across error messages, stack traces, and structured diagnostic output.
+///
+/// `DiagnosticRedactor` splits multiline secrets (such as PEM private keys) into individual lines
+/// while ignoring public PEM armor headers (`-----BEGIN ...-----` / `-----END ...-----`), then
+/// performs longest-match-first replacement so partial substrings cannot leak around shorter tokens.
+///
+/// ```swift
+/// let redactor = DiagnosticRedactor()
+/// redactor.register("sk_live_987654321")
+/// let safe = redactor.scrub("Auth failed for token sk_live_987654321")
+/// // safe == "Auth failed for token **********"
+/// ```
 public final class DiagnosticRedactor: Sendable {
-    /// Replacement mask substituted for any registered secret substring.
+    /// Canonical replacement mask substituted for every registered secret substring (`"**********"`).
     public static let redactedPlaceholder = "**********"
 
-    /// Minimum trimmed character length required for a secret or line fragment to be registered.
+    /// Minimum trimmed character count required before a secret or line fragment is registered.
     public let minimumLength: Int
 
     private struct State: Sendable {
@@ -33,13 +44,16 @@ public final class DiagnosticRedactor: Sendable {
 
     private let state = Mutex(State())
 
-    /// Creates a new redactor with the specified minimum secret length threshold (default `6`).
+    /// Creates a diagnostic redactor with a minimum secret length threshold.
+    ///
+    /// - Parameter minimumLength: Minimum trimmed character length required for registration (clamped to at least `1`; defaults to `6`).
     public init(minimumLength: Int = 6) {
         self.minimumLength = max(1, minimumLength)
     }
 
-    /// Registers a secret string (and any non-header/non-footer multiline segments >= `minimumLength`)
-    /// for subsequent scrubbing.
+    /// Registers a secret string and any non-armor multiline segments meeting ``minimumLength`` for scrubbing.
+    ///
+    /// - Parameter secret: Resolved plaintext secret string to track.
     public func register(_ secret: String) {
         let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -93,7 +107,9 @@ public final class DiagnosticRedactor: Sendable {
         }
     }
 
-    /// Registers secret bytes for scrubbing (as UTF-8 text when valid, or Base64 for raw binary data).
+    /// Registers raw secret bytes for scrubbing, decoding UTF-8 text when valid or Base64 for binary payloads.
+    ///
+    /// - Parameter data: Resolved secret byte buffer.
     public func register(_ data: Data) {
         guard !data.isEmpty else { return }
         if let utf8 = String(data: data, encoding: .utf8) {
@@ -107,11 +123,16 @@ public final class DiagnosticRedactor: Sendable {
     }
 
     /// Registers a secret byte array for scrubbing.
+    ///
+    /// - Parameter bytes: Resolved secret byte array.
     public func register(_ bytes: [UInt8]) {
         register(Data(bytes))
     }
 
-    /// Replaces every registered secret substring in `text` (longest match first) with `"**********"`.
+    /// Replaces every registered secret substring in `text` (longest match first) with ``redactedPlaceholder``.
+    ///
+    /// - Parameter text: Diagnostic or log string to sanitize.
+    /// - Returns: Copy of `text` with all registered secret occurrences replaced by `"**********"`.
     public func scrub(_ text: String) -> String {
         guard !text.isEmpty else { return text }
 
@@ -167,7 +188,7 @@ public final class DiagnosticRedactor: Sendable {
         return output
     }
 
-    /// Number of distinct secret patterns currently registered.
+    /// Number of distinct secret substrings currently registered in this redactor.
     public var registeredPatternCount: Int {
         state.withLock { $0.secrets.count }
     }

@@ -1,6 +1,9 @@
 import Foundation
 
-/// Deterministic, synthetic fixtures for unit and integration tests across `Rigging` modules.
+/// Deterministic, synthetic fixtures for unit and integration tests across Rigging modules.
+///
+/// All keys, identifiers, and endpoints in ``TestFixtures`` are synthetic test values safe to use
+/// in open-source test suites without touching real credentials or services.
 public enum TestFixtures: Sendable {
     /// Synthetic PKCS#8 EC private key PEM block suitable for testing multiline `.env` parsing,
     /// `SecretTransform.normalizePEM`, `DiagnosticRedactor` line scrubbing, and `withEphemeralFile`.
@@ -13,17 +16,17 @@ public enum TestFixtures: Sendable {
         -----END PRIVATE KEY-----
         """
 
-    /// Single-line `\n`-escaped variant of `sampleP8PEM` as commonly stored in CI environment variables.
+    /// Single-line `\n`-escaped variant of ``sampleP8PEM`` as commonly stored in CI environment variables.
     public static var sampleEscapedP8PEM: String {
         sampleP8PEM.replacingOccurrences(of: "\n", with: "\\n")
     }
 
-    /// Standard Base64 encoding of `sampleP8PEM`.
+    /// Standard Base64 encoding of ``sampleP8PEM``.
     public static var sampleBase64P8PEM: String {
         Data(sampleP8PEM.utf8).base64EncodedString()
     }
 
-    /// `"base64:"`-prefixed Base64 encoding of `sampleP8PEM` for testing `.decodeBase64IfPrefixed`.
+    /// `"base64:"`-prefixed Base64 encoding of ``sampleP8PEM`` for testing `SecretTransform.decodeBase64IfPrefixed`.
     public static var samplePrefixedBase64P8PEM: String {
         "base64:\(sampleBase64P8PEM)"
     }

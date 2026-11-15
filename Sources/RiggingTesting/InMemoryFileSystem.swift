@@ -85,6 +85,10 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
 
     // MARK: - FileSystem Conformance
 
+    /// Returns whether a file or directory exists at `path` in memory.
+    ///
+    /// - Parameter path: Absolute or relative path to inspect.
+    /// - Returns: `true` if a file or directory is registered at the normalized path; otherwise `false`.
     public func fileExists(atPath path: String) -> Bool {
         let norm = Self.normalizePath(path)
         return state.withLock { s in
@@ -92,6 +96,10 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
         }
     }
 
+    /// Returns whether `path` refers to a directory in memory.
+    ///
+    /// - Parameter path: Absolute or relative path to inspect.
+    /// - Returns: `true` if `path` is a registered directory; otherwise `false`.
     public func isDirectory(atPath path: String) -> Bool {
         let norm = Self.normalizePath(path)
         return state.withLock { s in
@@ -99,6 +107,12 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
         }
     }
 
+    /// Reads the raw bytes of the in-memory file at `path`.
+    ///
+    /// - Parameter path: Path to the file to read.
+    /// - Returns: Raw `Data` stored for `path`.
+    /// - Throws: `CocoaError(.fileReadNoSuchFile)` when `path` does not exist, or
+    ///   `CocoaError(.fileReadUnknown)` when `path` refers to a directory.
     public func readFile(atPath path: String) throws -> Data {
         let norm = Self.normalizePath(path)
         return try state.withLock { s in
@@ -112,6 +126,11 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
         }
     }
 
+    /// Lists immediate child entry names inside the directory at `path` in sorted order.
+    ///
+    /// - Parameter path: Path to an existing directory in memory.
+    /// - Returns: Sorted immediate child file and directory names.
+    /// - Throws: `CocoaError(.fileReadNoSuchFile)` when `path` is not an existing directory.
     public func contentsOfDirectory(atPath path: String) throws -> [String] {
         let norm = Self.normalizePath(path)
         return try state.withLock { s in
@@ -140,6 +159,11 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
         }
     }
 
+    /// Returns the 12-bit POSIX permission mode (for example, `0o600` or `0o755`) for `path`.
+    ///
+    /// - Parameter path: Path to an existing file or directory in memory.
+    /// - Returns: POSIX permission bits masked with `0o7777`.
+    /// - Throws: `POSIXError(.ENOENT)` when `path` does not exist.
     public func posixPermissions(atPath path: String) throws -> UInt16 {
         let norm = Self.normalizePath(path)
         return try state.withLock { s in
@@ -157,6 +181,10 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
         }
     }
 
+    /// Returns whether `path` refers to an executable regular file (`mode & 0o111 != 0`).
+    ///
+    /// - Parameter path: Path to inspect.
+    /// - Returns: `true` if `path` is a regular file with execute permission bits set; otherwise `false`.
     public func isExecutableFile(atPath path: String) -> Bool {
         let norm = Self.normalizePath(path)
         return state.withLock { s in
@@ -179,11 +207,21 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
     // MARK: - Dynamic Mutation Helpers (for Watcher & Live-Reload Tests)
 
     /// Writes or overwrites a UTF-8 file in memory, creating parent directories automatically.
+    ///
+    /// - Parameters:
+    ///   - content: UTF-8 string content to store.
+    ///   - path: Target file path.
+    ///   - permissions: Optional POSIX permission override (for example, `0o600`).
     public func writeString(_ content: String, atPath path: String, permissions: UInt16? = nil) {
         writeFile(Data(content.utf8), atPath: path, permissions: permissions)
     }
 
     /// Writes or overwrites a binary file in memory, creating parent directories automatically.
+    ///
+    /// - Parameters:
+    ///   - data: Raw file bytes to store.
+    ///   - path: Target file path.
+    ///   - permissions: Optional POSIX permission override (for example, `0o600`).
     public func writeFile(_ data: Data, atPath path: String, permissions: UInt16? = nil) {
         let norm = Self.normalizePath(path)
         state.withLock { s in
@@ -203,6 +241,10 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
     }
 
     /// Creates a directory and all ancestor directories in memory.
+    ///
+    /// - Parameters:
+    ///   - path: Directory path to create.
+    ///   - permissions: POSIX permission bits applied to `path` (defaults to `0o755`).
     public func makeDirectory(atPath path: String, permissions: UInt16 = 0o755) {
         let norm = Self.normalizePath(path)
         state.withLock { s in
@@ -214,6 +256,10 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
     }
 
     /// Updates POSIX permissions for an existing file or directory.
+    ///
+    /// - Parameters:
+    ///   - permissions: New POSIX permission mode (masked with `0o7777`).
+    ///   - path: Target file or directory path.
     public func setPermissions(_ permissions: UInt16, atPath path: String) {
         let norm = Self.normalizePath(path)
         state.withLock { s in
@@ -228,7 +274,11 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
         }
     }
 
-    /// Marks or unmarks a path as an executable file (creating an empty `0o755` file if needed).
+    /// Marks or unmarks a path as an executable file, creating an empty `0o755` file if needed.
+    ///
+    /// - Parameters:
+    ///   - isExecutable: Whether the path should be treated as executable.
+    ///   - path: Target binary file path.
     public func setExecutable(_ isExecutable: Bool, atPath path: String) {
         let norm = Self.normalizePath(path)
         state.withLock { s in
@@ -253,7 +303,9 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
         }
     }
 
-    /// Removes a file or directory tree from the in-memory filesystem.
+    /// Removes a file or directory subtree from the in-memory filesystem.
+    ///
+    /// - Parameter path: File or directory path to delete (root `"/"` is ignored).
     public func removeItem(atPath path: String) {
         let norm = Self.normalizePath(path)
         guard norm != "/" else { return }
@@ -278,6 +330,10 @@ public final class InMemoryFileSystem: FileSystem, Sendable {
 
     // MARK: - Path & Permission Helpers
 
+    /// Normalizes a POSIX path by collapsing duplicate slashes, `.` segments, and `..` parent traversals.
+    ///
+    /// - Parameter rawPath: Raw POSIX path string.
+    /// - Returns: Canonicalized path string.
     public static func normalizePath(_ rawPath: String) -> String {
         guard !rawPath.isEmpty else { return "/" }
         let isAbsolute = rawPath.hasPrefix("/")

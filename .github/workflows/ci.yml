@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  macos:
+    name: macOS (Swift 6.2 + Coverage + DocC)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Swift 6.2
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Toolchain Version
+        run: swift --version
+
+      - name: Build (-warnings-as-errors)
+        run: swift build --build-tests -Xswiftc -warnings-as-errors
+
+      - name: Test with Code Coverage
+        run: swift test --parallel --enable-code-coverage
+
+      - name: Verify Multi-Module DocC (--warnings-as-errors)
+        run: |
+          mkdir -p /tmp/docc
+          swift package --allow-writing-to-directory /tmp/docc \
+            generate-documentation \
+            --target Rigging \
+            --target RiggingCore \
+            --target RiggingOnePassword \
+            --target RiggingKeychain \
+            --target RiggingBitwarden \
+            --target RiggingUnixPass \
+            --target RiggingArgumentParser \
+            --target RiggingSwiftConfiguration \
+            --target RiggingTOML \
+            --target RiggingYAML \
+            --target RiggingTesting \
+            --warnings-as-errors \
+            --output-path /tmp/docc
+
+  linux:
+    name: Linux (Ubuntu 24.04 / Swift 6.2)
+    runs-on: ubuntu-24.04
+    container:
+      image: swift:6.2-noble
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain Version
+        run: swift --version
+
+      - name: Build (-warnings-as-errors)
+        run: swift build --build-tests -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test --parallel

@@ -8,23 +8,45 @@ import RiggingCore
 
 /// Configuration for resolving `op://` secret references via a 1Password Connect REST Server
 /// instead of the local `op` CLI binary.
+///
+/// Provide an explicit configuration to ``OnePasswordProvider/init(account:serviceAccountToken:executablePath:searchDirectories:timeout:connect:httpTransport:)``
+/// or `SecretProvider.onePasswordConnect(host:token:httpTransport:)`, or export both
+/// `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN` in the process environment.
 public struct OnePasswordConnectConfiguration: Sendable, Equatable {
+    /// Base `http://` or `https://` URL of the 1Password Connect REST Server.
     public let host: URL
+
+    /// Bearer access token authenticating requests against the 1Password Connect REST Server.
     public let token: Secret<String>
 
+    /// Creates a 1Password Connect configuration using a redacted `Secret<String>` bearer token.
+    ///
+    /// - Parameters:
+    ///   - host: Base `http://` or `https://` URL of the 1Password Connect server.
+    ///   - token: Leak-proof `Secret<String>` wrapping the Connect server access token.
     public init(host: URL, token: Secret<String>) {
         self.host = host
         self.token = token
     }
 
+    /// Creates a 1Password Connect configuration by wrapping a raw token string in `Secret`.
+    ///
+    /// - Parameters:
+    ///   - host: Base `http://` or `https://` URL of the 1Password Connect server.
+    ///   - token: Plaintext Connect server access token, immediately wrapped in `Secret<String>`.
     public init(host: URL, token: String) {
         self.host = host
         self.token = Secret(token)
     }
 }
 
-/// Injectable HTTP transport used by `OnePasswordProvider` in 1Password Connect REST mode.
+/// Injectable HTTP transport used by ``OnePasswordProvider`` when operating in 1Password Connect REST mode.
 public protocol OnePasswordHTTPTransport: Sendable {
+    /// Executes an HTTP request and returns the response payload and HTTP metadata.
+    ///
+    /// - Parameter request: The configured `URLRequest` targeting the 1Password Connect server.
+    /// - Returns: A tuple of raw response `Data` and the `HTTPURLResponse`.
+    /// - Throws: A transport error or `SecretResolutionError` if the request fails.
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
 }
 
@@ -32,12 +54,40 @@ public protocol OnePasswordHTTPTransport: Sendable {
 public struct URLSessionOnePasswordHTTPTransport: OnePasswordHTTPTransport, Sendable {
     private let session: URLSession
 
+    /// Creates an HTTP transport backed by the given `URLSession`.
+    ///
+    /// - Parameter session: The `URLSession` used to execute Connect REST requests. Defaults to `.shared`.
     public init(session: URLSession = .shared) {
         self.session = session
     }
 
+    /// Sends an HTTP request using the underlying `URLSession`.
+    ///
+    /// - Parameter request: The configured `URLRequest` to execute.
+    /// - Returns: A tuple containing the response body `Data` and `HTTPURLResponse`.
+    /// - Throws: A `URLError` on network failure, or `SecretResolutionError.providerFailed` if the response is non-HTTP.
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        #if canImport(FoundationNetworking)
+        let (data, response): (Data, URLResponse) = try await withCheckedThrowingContinuation { continuation in
+            let task = session.dataTask(with: request) { data, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let data, let response {
+                    continuation.resume(returning: (data, response))
+                } else {
+                    continuation.resume(
+                        throwing: SecretResolutionError.providerFailed(
+                            scheme: "op",
+                            message: "1Password Connect server returned an empty HTTP response."
+                        )
+                    )
+                }
+            }
+            task.resume()
+        }
+        #else
         let (data, response) = try await session.data(for: request)
+        #endif
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SecretResolutionError.providerFailed(
                 scheme: "op",
@@ -48,16 +98,24 @@ public struct URLSessionOnePasswordHTTPTransport: OnePasswordHTTPTransport, Send
     }
 }
 
-/// Closure-backed `OnePasswordHTTPTransport` for deterministic, hermetic unit testing.
+/// Closure-backed ``OnePasswordHTTPTransport`` for deterministic, hermetic unit testing.
 public struct ClosureOnePasswordHTTPTransport: OnePasswordHTTPTransport, Sendable {
     private let handler: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
+    /// Creates a custom HTTP transport delegating requests to `handler`.
+    ///
+    /// - Parameter handler: Asynchronous `@Sendable` closure returning mock `(Data, HTTPURLResponse)` tuples.
     public init(
         _ handler: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     ) {
         self.handler = handler
     }
 
+    /// Invokes the underlying closure handler with `request`.
+    ///
+    /// - Parameter request: The outgoing `URLRequest`.
+    /// - Returns: The simulated response `Data` and `HTTPURLResponse`.
+    /// - Throws: Any error thrown by the handler closure.
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         try await handler(request)
     }
@@ -72,6 +130,7 @@ public struct ClosureOnePasswordHTTPTransport: OnePasswordHTTPTransport, Sendabl
 /// 3. 1Password Connect Server REST mode (`OP_CONNECT_HOST` + `OP_CONNECT_TOKEN` or explicit configuration)
 ///    with no `op` CLI binary dependency.
 public struct OnePasswordProvider: SecretProvider, Sendable {
+    /// URI schemes resolved by this provider (`["op"]`).
     public let supportedSchemes: Set<String> = ["op"]
 
     /// Optional default 1Password account shorthand, sign-in address, or UUID (overridden per-URI by `?account=...`).
@@ -95,6 +154,16 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
     /// HTTP transport used when operating in 1Password Connect REST mode.
     public let httpTransport: any OnePasswordHTTPTransport
 
+    /// Creates a batched 1Password secret provider.
+    ///
+    /// - Parameters:
+    ///   - account: Optional default 1Password account shorthand, sign-in URL, or UUID.
+    ///   - serviceAccountToken: Optional Service Account token forwarded as `OP_SERVICE_ACCOUNT_TOKEN`.
+    ///   - executablePath: Explicit absolute path to a trusted `op` binary. When `nil`, `searchDirectories` are checked.
+    ///   - searchDirectories: Trusted absolute system directories searched for `op`.
+    ///   - timeout: Maximum execution duration per `op` subprocess invocation. Defaults to 30 seconds.
+    ///   - connect: Explicit 1Password Connect REST configuration. When `nil`, `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN` are inspected.
+    ///   - httpTransport: Injectable HTTP transport for 1Password Connect REST requests.
     public init(
         account: String? = nil,
         serviceAccountToken: Secret<String>? = nil,
@@ -118,6 +187,16 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         self.httpTransport = httpTransport
     }
 
+    /// Resolves a deduplicated batch of `op://` secret references in minimal unlock passes.
+    ///
+    /// Standard vault fields are resolved together via a single `op inject` invocation over in-memory
+    /// pipes with a per-batch cryptographic boundary nonce, avoiding Touch ID prompt storms and disk files.
+    ///
+    /// - Parameters:
+    ///   - references: The `SecretReference` items to resolve. Non-`op://` references are ignored.
+    ///   - context: Active `SettingsContext` supplying environment variables, filesystem, subprocess runner, and redactor.
+    /// - Returns: A dictionary mapping each resolved `SecretReference` to its raw secret `Data`.
+    /// - Throws: `SecretResolutionError` or `SecretBatchPartialFailureError` if authentication, lookup, or CLI trust verification fails.
     public func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
@@ -1013,7 +1092,15 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
 // MARK: - Convenience Static Factory
 
 extension SecretProvider where Self == OnePasswordProvider {
-    /// Batched 1Password (`op://`) secret provider using the local `op` CLI (or `OP_CONNECT_HOST` + `OP_CONNECT_TOKEN` when present).
+    /// Creates a batched 1Password (`op://`) secret provider backed by the local `op` CLI
+    /// (or `OP_CONNECT_HOST` + `OP_CONNECT_TOKEN` when present in the environment).
+    ///
+    /// - Parameters:
+    ///   - account: Optional default 1Password account shorthand, sign-in address, or UUID.
+    ///   - serviceAccountToken: Optional Service Account token forwarded as `OP_SERVICE_ACCOUNT_TOKEN`.
+    ///   - executablePath: Optional explicit absolute path to a trusted `op` executable.
+    ///   - timeout: Maximum execution duration per CLI invocation. Defaults to 30 seconds.
+    /// - Returns: A configured ``OnePasswordProvider``.
     public static func onePassword(
         account: String? = nil,
         serviceAccountToken: Secret<String>? = nil,
@@ -1028,7 +1115,14 @@ extension SecretProvider where Self == OnePasswordProvider {
         )
     }
 
-    /// 1Password Connect Server REST provider resolving `op://` references over HTTP with zero CLI binary dependency.
+    /// Creates a 1Password Connect REST Server provider resolving `op://` references over HTTP
+    /// with zero `op` CLI binary dependency.
+    ///
+    /// - Parameters:
+    ///   - host: Base `http://` or `https://` URL of the 1Password Connect server.
+    ///   - token: Leak-proof `Secret<String>` wrapping the Connect server access token.
+    ///   - httpTransport: HTTP transport used to execute REST calls. Defaults to ``URLSessionOnePasswordHTTPTransport``.
+    /// - Returns: A configured ``OnePasswordProvider`` operating in Connect REST mode.
     public static func onePasswordConnect(
         host: URL,
         token: Secret<String>,

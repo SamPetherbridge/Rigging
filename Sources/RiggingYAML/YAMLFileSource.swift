@@ -2,25 +2,54 @@ import Foundation
 import RiggingCore
 import Yams
 
-/// Origin classification for YAML-backed configuration files.
+/// Classifies the provenance category assigned to settings loaded from a YAML configuration file.
+///
+/// Selecting ``projectConfig`` marks loaded keys with `SettingOrigin.projectConfig`, ensuring
+/// Rigging's repo-committed plaintext guard rejects literal secrets committed to `.yaml` / `.yml`
+/// project files unless explicitly permitted.
 public enum YAMLSourceOriginStyle: Sendable, Equatable, Hashable {
+    /// Marks loaded keys with `SettingOrigin.projectConfig(path:keyPath:profile:)`.
     case projectConfig
+
+    /// Marks loaded keys with `SettingOrigin.userConfig(path:keyPath:profile:)`.
     case userConfig
+
+    /// Marks loaded keys with `SettingOrigin.customSource(name:detail:)` using `sourceName`.
     case custom(sourceName: String)
 }
 
-/// Alias matching `pydantic-settings` parity naming (`YAMLFileSettingsSource`).
+/// Type alias matching `pydantic-settings` naming conventions for ``YAMLFileSource``.
 public typealias YAMLFileSettingsSource = YAMLFileSource
 
-/// Loads one or more YAML configuration files into a `RawConfigTree` using `Yams`, preserving
-/// exact scalar/sequence/mapping types, stripping `"$schema"` and `"profiles"` metadata keys,
-/// and applying named profile overlays when active.
+/// Loads configuration values from one or more explicit YAML files into a `RawConfigTree`.
+///
+/// `YAMLFileSource` parses YAML 1.2 documents via `Yams`, resolves YAML anchors, aliases, and
+/// `<<` merge keys, preserves exact scalar/sequence/mapping types, strips reserved `"$schema"` and
+/// `"profiles"` root metadata keys, and overlays `profiles.<active>` when a profile is active.
+///
+/// ```swift
+/// static func customizeSources(_ defaults: DefaultSources) -> [any SettingsSource] {
+///     [
+///         defaults.initOverrides,
+///         defaults.environment,
+///         YAMLFileSource(path: "/etc/myapp/config.yaml", optional: true),
+///     ]
+/// }
+/// ```
 public struct YAMLFileSource: SettingsSource, Sendable {
+    /// Ordered list of YAML file paths to load, where later paths override earlier paths.
     public let paths: [String]
+
+    /// Whether missing files are silently ignored (`true`) or throw a file-not-found error (`false`).
     public let optional: Bool
+
+    /// An explicit profile name overriding `--profile`, `<ENV_PREFIX>PROFILE`, and `SettingsConfiguration.profile`.
     public let profile: String?
+
+    /// The provenance classification applied to every key loaded by this source.
     public let originStyle: YAMLSourceOriginStyle
 
+    /// The human-readable name of this configuration source.
     public var sourceName: String {
         switch originStyle {
         case .projectConfig:
@@ -32,6 +61,13 @@ public struct YAMLFileSource: SettingsSource, Sendable {
         }
     }
 
+    /// Creates a YAML file source backed by a single file path.
+    ///
+    /// - Parameters:
+    ///   - path: Absolute, `~`-prefixed, or working-directory-relative path to the YAML file.
+    ///   - optional: When `true` (the default), missing files yield an empty tree without throwing.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - originStyle: Provenance classification assigned to loaded keys.
     public init(
         path: String,
         optional: Bool = true,
@@ -44,6 +80,13 @@ public struct YAMLFileSource: SettingsSource, Sendable {
         self.originStyle = originStyle
     }
 
+    /// Creates a YAML file source backed by an ordered list of file paths.
+    ///
+    /// - Parameters:
+    ///   - paths: Ordered YAML file paths; later files override earlier files.
+    ///   - optional: When `true` (the default), missing files are skipped without throwing.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - originStyle: Provenance classification assigned to loaded keys.
     public init(
         paths: [String],
         optional: Bool = true,
@@ -56,6 +99,13 @@ public struct YAMLFileSource: SettingsSource, Sendable {
         self.originStyle = originStyle
     }
 
+    /// Loads and merges all configured YAML files against `configuration` and `context`.
+    ///
+    /// - Parameters:
+    ///   - configuration: Model-level settings configuration controlling case sensitivity and profile defaults.
+    ///   - context: Execution context providing the filesystem, working directory, home directory, and CLI/env state.
+    /// - Returns: A merged `RawConfigTree` annotated with per-key provenance.
+    /// - Throws: `CocoaError(.fileNoSuchFile)` when `optional` is `false` and a path is missing, or `ConfigFileParseError` on invalid YAML.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -104,19 +154,44 @@ public struct YAMLFileSource: SettingsSource, Sendable {
     }
 }
 
-/// Discovers `.yaml` / `.yml` project configuration files by walking upward from
-/// `context.workingDirectory` until reaching a `.git` directory/file boundary (inclusive of the
-/// repository root) or `context.homeDirectory` (never walking above `$HOME`).
+/// Discovers project-scoped `.yaml` and `.yml` configuration files by walking upward from the
+/// working directory to the nearest `.git` repository root or user home directory boundary.
+///
+/// `YAMLProjectConfigSource` mirrors `ProjectConfigSource` for YAML files, automatically checking
+/// both `.yml` and `.yaml` siblings when derived from `configuration.projectConfigFiles`, stopping
+/// inclusively at any `.git` directory or git-worktree file, and never walking above
+/// `context.homeDirectory`.
+///
+/// ```swift
+/// static func customizeSources(_ defaults: DefaultSources) -> [any SettingsSource] {
+///     [
+///         defaults.initOverrides,
+///         defaults.environment,
+///         defaults.dotEnv,
+///         YAMLProjectConfigSource(),
+///         YAMLUserConfigSource(),
+///     ]
+/// }
+/// ```
 public struct YAMLProjectConfigSource: SettingsSource, Sendable {
     /// Optional explicit filenames overriding `configuration.projectConfigFiles`.
     public let fileNames: [String]?
-    /// Optional explicit profile overriding `configuration.profile` / `<ENV_PREFIX>PROFILE`.
+
+    /// Optional explicit profile overriding `configuration.profile` and `<ENV_PREFIX>PROFILE`.
     public let profile: String?
-    /// When `true`, stops upward search at the nearest directory containing a matching config file.
+
+    /// Whether upward directory traversal stops at the nearest directory containing a matching YAML file.
     public let stopAtFirstFound: Bool
 
+    /// The canonical source identifier (`"YAMLProjectConfigSource"`).
     public var sourceName: String { "YAMLProjectConfigSource" }
 
+    /// Creates a project YAML configuration source searching for `fileNames` (or `configuration.projectConfigFiles` when `nil`).
+    ///
+    /// - Parameters:
+    ///   - fileNames: Optional explicit candidate filenames per directory; later names override earlier names.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - stopAtFirstFound: When `true`, stops walking upward after the nearest directory containing a match.
     public init(
         fileNames: [String]? = nil,
         profile: String? = nil,
@@ -127,6 +202,12 @@ public struct YAMLProjectConfigSource: SettingsSource, Sendable {
         self.stopAtFirstFound = stopAtFirstFound
     }
 
+    /// Creates a project YAML configuration source searching for a single filename.
+    ///
+    /// - Parameters:
+    ///   - fileName: Candidate YAML filename to search for (for example, `".myapp.yml"`).
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - stopAtFirstFound: When `true`, stops walking upward after the nearest directory containing `fileName`.
     public init(
         fileName: String,
         profile: String? = nil,
@@ -137,6 +218,13 @@ public struct YAMLProjectConfigSource: SettingsSource, Sendable {
         self.stopAtFirstFound = stopAtFirstFound
     }
 
+    /// Discovers, parses, and merges project YAML configuration files from the directory hierarchy.
+    ///
+    /// - Parameters:
+    ///   - configuration: Model-level settings configuration providing candidate filenames and case sensitivity.
+    ///   - context: Execution context providing working/home directories, environment, and filesystem access.
+    /// - Returns: A merged `RawConfigTree` with `.projectConfig` provenance on every entry.
+    /// - Throws: `ConfigFileParseError` if any discovered YAML file fails to parse or is not a top-level mapping.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -277,18 +365,34 @@ public struct YAMLProjectConfigSource: SettingsSource, Sendable {
     }
 }
 
-/// Loads user-scoped YAML configuration from `$XDG_CONFIG_HOME/<xdgAppName>/config.{yml,yaml}`
-/// (or `<homeDirectory>/.config/<xdgAppName>/config.{yml,yaml}`), with optional macOS fallback to
-/// `<homeDirectory>/Library/Application Support/<xdgAppName>/config.{yml,yaml}`.
+/// Loads user-scoped YAML configuration from `$XDG_CONFIG_HOME/<app>/config.{yml,yaml}`
+/// (or `~/.config/<app>/config.{yml,yaml}`) with optional macOS Application Support fallback.
+///
+/// Within each directory, later filenames in ``fileNames`` override earlier filenames, and XDG
+/// configuration files take precedence over `~/Library/Application Support/<app>/` fallback files.
 public struct YAMLUserConfigSource: SettingsSource, Sendable {
+    /// Optional explicit application subdirectory name overriding `configuration.xdgAppName`.
     public let appName: String?
-    /// Ordered filenames checked in each user config directory (later files override earlier files).
+
+    /// Ordered filenames checked in each user configuration directory (later files override earlier files).
     public let fileNames: [String]
+
+    /// Optional explicit profile overriding `configuration.profile` and `<ENV_PREFIX>PROFILE`.
     public let profile: String?
+
+    /// Whether `<homeDirectory>/Library/Application Support/<app>/` is checked as a lower-priority fallback.
     public let includeApplicationSupportFallback: Bool
 
+    /// The canonical source identifier (`"YAMLUserConfigSource"`).
     public var sourceName: String { "YAMLUserConfigSource" }
 
+    /// Creates a user-scoped YAML configuration source checking multiple candidate filenames.
+    ///
+    /// - Parameters:
+    ///   - appName: Optional explicit application folder name overriding `configuration.xdgAppName`.
+    ///   - fileNames: Ordered filenames checked in each directory (defaults to `["config.yml", "config.yaml"]`).
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - includeApplicationSupportFallback: When `true` (the default), checks `~/Library/Application Support/<app>/` beneath XDG.
     public init(
         appName: String? = nil,
         fileNames: [String] = ["config.yml", "config.yaml"],
@@ -301,6 +405,13 @@ public struct YAMLUserConfigSource: SettingsSource, Sendable {
         self.includeApplicationSupportFallback = includeApplicationSupportFallback
     }
 
+    /// Creates a user-scoped YAML configuration source checking a single filename.
+    ///
+    /// - Parameters:
+    ///   - appName: Optional explicit application folder name overriding `configuration.xdgAppName`.
+    ///   - fileName: Single YAML filename to look up inside each user config directory.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - includeApplicationSupportFallback: When `true` (the default), checks `~/Library/Application Support/<app>/` beneath XDG.
     public init(
         appName: String? = nil,
         fileName: String,
@@ -313,6 +424,13 @@ public struct YAMLUserConfigSource: SettingsSource, Sendable {
         self.includeApplicationSupportFallback = includeApplicationSupportFallback
     }
 
+    /// Loads user-scoped YAML configuration files and applies any active profile overlay.
+    ///
+    /// - Parameters:
+    ///   - configuration: Model-level settings configuration providing `xdgAppName`, `profile`, and `caseSensitive`.
+    ///   - context: Execution context providing environment variables, home directory, and filesystem access.
+    /// - Returns: A merged `RawConfigTree` with `.userConfig` provenance, or `.empty` when `xdgAppName` is unset.
+    /// - Throws: `ConfigFileParseError` if a present user YAML configuration file contains invalid syntax.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext

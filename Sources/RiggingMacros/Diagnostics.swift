@@ -1,19 +1,30 @@
 import SwiftDiagnostics
 import SwiftSyntax
 
-/// Compile-time diagnostic messages emitted by `RiggingMacros`.
+/// Compile-time diagnostic messages emitted by `RiggingMacros` during macro expansion.
 public enum RiggingMacroDiagnostic: DiagnosticMessage, Error, Equatable {
+    /// Emitted when `@Settings` or `@Rigged` is attached to a non-struct declaration.
     case notAStruct(macroName: String)
+    /// Emitted when a field macro is attached to a computed property or non-property declaration.
     case notAStoredProperty(macroName: String)
+    /// Emitted when a field macro is attached to a `static` or `class` property.
     case staticPropertyNotAllowed(macroName: String)
+    /// Emitted when a single variable declaration binds multiple patterns on one line.
     case multipleBindings(macroName: String)
+    /// Emitted when a setting property omits an explicit type annotation and cannot be inferred from a literal initializer.
     case missingTypeAnnotation(propertyName: String, macroName: String)
+    /// Emitted when an immutable `let` property also declares an inline default value.
     case immutablePropertyWithDefault(propertyName: String, macroName: String)
+    /// Emitted when an unannotated stored property inside `@Settings` lacks a default value.
     case unannotatedUninitializedProperty(propertyName: String)
+    /// Emitted when `@SecretSetting` is applied to a property whose type is neither `Secret<T>` nor `Secret<T>?`.
     case invalidSecretSettingType(propertyName: String, actualType: String)
+    /// Emitted when `@Setting`, `@SecretSetting`, or `@NestedSettings` is used outside a `@Settings` or `@Rigged` struct.
     case outsideSettingsStruct(macroName: String)
+    /// Emitted when multiple field macros are stacked on the same stored property.
     case conflictingSettingAttributes(propertyName: String)
 
+    /// Human-readable diagnostic description surfaced by the Swift compiler.
     public var message: String {
         switch self {
         case .notAStruct(let macroName):
@@ -39,6 +50,7 @@ public enum RiggingMacroDiagnostic: DiagnosticMessage, Error, Equatable {
         }
     }
 
+    /// Stable diagnostic identifier within the `RiggingMacros` domain.
     public var diagnosticID: MessageID {
         let id: String
         switch self {
@@ -66,6 +78,7 @@ public enum RiggingMacroDiagnostic: DiagnosticMessage, Error, Equatable {
         return MessageID(domain: "RiggingMacros", id: id)
     }
 
+    /// Severity level reported for the diagnostic (`.error`).
     public var severity: DiagnosticSeverity {
         .error
     }

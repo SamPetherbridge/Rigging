@@ -1,0 +1,60 @@
+name: Feature Request
+description: Propose a new configuration source, secret provider, validator, or pydantic-settings capability.
+title: "✨ "
+labels: ["type: feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Architectural Boundary:** `RiggingCore` and `RiggingTOML` maintain a strict **zero external dependency** policy (`Foundation` only). Proposals requiring third-party parsers, cloud SDKs, or ecosystem libraries should target an existing integration module or propose a dedicated satellite product.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What configuration, secret-management, or operational workflow are you trying to solve?
+      placeholder: "Describe the CLI, daemon, Swift Server, or Apple platform scenario..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_api
+    attributes:
+      label: Proposed Swift API / `pydantic-settings` Equivalent
+      description: Sketch how the macro parameter, `SettingsSource`, `SecretProvider`, or `SettingValidator` should read at the call site (and note any `pydantic-settings` prior art if applicable).
+      render: swift
+      placeholder: |
+        let settings = try await ServiceSettings.load(
+            secretProviders: [.awsSecretsManager(region: "ap-southeast-2")]
+        )
+    validations:
+      required: true
+
+  - type: dropdown
+    id: target_module
+    attributes:
+      label: Target Module
+      description: Where does this capability belong in the package graph?
+      options:
+        - Rigging / RiggingMacros
+        - RiggingCore (Zero external dependencies!)
+        - RiggingOnePassword
+        - RiggingKeychain
+        - RiggingBitwarden
+        - RiggingUnixPass
+        - RiggingArgumentParser
+        - RiggingSwiftConfiguration
+        - RiggingTOML (Zero external dependencies!)
+        - RiggingYAML
+        - RiggingTesting
+        - New Satellite Product (e.g., RiggingAWSSecrets)
+    validations:
+      required: true
+
+  - type: textarea
+    id: security_considerations
+    attributes:
+      label: Security & Provenance Considerations
+      description: Does this feature handle secret material, spawn subprocesses, read files, or introduce a new `SettingOrigin`?
+    validations:
+      required: false

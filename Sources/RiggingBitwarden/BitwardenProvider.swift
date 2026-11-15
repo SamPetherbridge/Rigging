@@ -5,6 +5,7 @@ import RiggingCore
 /// - **Bitwarden Secrets Manager (`bws://<secret-uuid>`)** via trusted `bws` CLI (`bws secret get <uuid> --output json`, forwarding `BWS_ACCESS_TOKEN`).
 /// - **Bitwarden Vault CLI (`bw://<item-id>/<field>`)** via trusted `bw` CLI (`bw get item <item-id>`, forwarding `BW_SESSION`).
 public struct BitwardenProvider: SecretProvider, Sendable {
+    /// URI schemes resolved by this provider (`["bws", "bw"]`).
     public let supportedSchemes: Set<String> = ["bws", "bw"]
 
     /// Optional explicit absolute path to the `bws` CLI binary.
@@ -25,6 +26,15 @@ public struct BitwardenProvider: SecretProvider, Sendable {
     /// Subprocess execution timeout per CLI call.
     public let timeout: Duration?
 
+    /// Creates a Bitwarden secret provider supporting both `bws://` (Secrets Manager) and `bw://` (Vault CLI).
+    ///
+    /// - Parameters:
+    ///   - bwsExecutablePath: Optional explicit absolute path to a trusted `bws` executable.
+    ///   - bwExecutablePath: Optional explicit absolute path to a trusted `bw` executable.
+    ///   - bwsAccessToken: Optional explicit machine access token forwarded as `BWS_ACCESS_TOKEN`.
+    ///   - bwSession: Optional explicit Vault session key forwarded as `BW_SESSION`.
+    ///   - searchDirectories: Trusted absolute system directories searched when executable paths are `nil`.
+    ///   - timeout: Maximum execution duration per CLI invocation. Defaults to 30 seconds.
     public init(
         bwsExecutablePath: String? = nil,
         bwExecutablePath: String? = nil,
@@ -46,6 +56,13 @@ public struct BitwardenProvider: SecretProvider, Sendable {
         self.timeout = timeout
     }
 
+    /// Resolves a batch of `bws://` and `bw://` secret references, deduplicating `bw get item` calls by item ID.
+    ///
+    /// - Parameters:
+    ///   - references: The `SecretReference` items to resolve. Non-Bitwarden schemes are ignored.
+    ///   - context: Active `SettingsContext` supplying environment variables, filesystem, subprocess runner, and redactor.
+    /// - Returns: A dictionary mapping each resolved `SecretReference` to its UTF-8 secret `Data`.
+    /// - Throws: `SecretResolutionError` or `SecretBatchPartialFailureError` on missing binaries, locked vaults, or missing fields.
     public func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
@@ -528,7 +545,15 @@ public struct BitwardenProvider: SecretProvider, Sendable {
 }
 
 extension SecretProvider where Self == BitwardenProvider {
-    /// Bitwarden secret provider supporting both `bws://<secret-uuid>` and `bw://<item-id>/<field>`.
+    /// Creates a Bitwarden secret provider supporting both `bws://<secret-uuid>` and `bw://<item-id>/<field>`.
+    ///
+    /// - Parameters:
+    ///   - bwsExecutablePath: Optional explicit absolute path to a trusted `bws` executable.
+    ///   - bwExecutablePath: Optional explicit absolute path to a trusted `bw` executable.
+    ///   - bwsAccessToken: Optional explicit Secrets Manager token forwarded as `BWS_ACCESS_TOKEN`.
+    ///   - bwSession: Optional explicit Vault session key forwarded as `BW_SESSION`.
+    ///   - timeout: Maximum execution duration per CLI invocation. Defaults to 30 seconds.
+    /// - Returns: A configured ``BitwardenProvider``.
     public static func bitwarden(
         bwsExecutablePath: String? = nil,
         bwExecutablePath: String? = nil,

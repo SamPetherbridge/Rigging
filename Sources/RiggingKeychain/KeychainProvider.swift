@@ -4,18 +4,28 @@ import RiggingCore
 import Security
 #endif
 
-/// Password item class supported by `KeychainProvider`.
+/// Password item class supported by ``KeychainProvider``.
 public enum KeychainPasswordKind: String, Sendable, Equatable, Hashable {
+    /// Generic service password item (`kSecClassGenericPassword`, matched via `kSecAttrService` and `kSecAttrAccount`).
     case generic
+    /// Internet server password item (`kSecClassInternetPassword`, matched via `kSecAttrServer` and `kSecAttrAccount`).
     case internet
 }
 
 #if canImport(Security)
-/// Result returned by a `KeychainProvider` lookup backend.
+/// Result returned by a ``KeychainProvider`` lookup backend.
 public struct KeychainBackendResponse: Sendable, Equatable {
+    /// Raw Security framework `OSStatus` code returned by `SecItemCopyMatching` (for example `errSecSuccess` or `errSecItemNotFound`).
     public let status: OSStatus
+
+    /// Decrypted secret payload bytes returned when `status` is `errSecSuccess`.
     public let data: Data?
 
+    /// Creates a Keychain lookup backend response.
+    ///
+    /// - Parameters:
+    ///   - status: The Security framework `OSStatus` code.
+    ///   - data: Optional secret item payload bytes.
     public init(status: OSStatus, data: Data? = nil) {
         self.status = status
         self.data = data
@@ -26,9 +36,10 @@ public struct KeychainBackendResponse: Sendable, Equatable {
 /// Native Apple `Security.framework` Keychain secret provider (`keychain://<service>/<account>`).
 ///
 /// On Apple platforms (`canImport(Security)`), lookups invoke `SecItemCopyMatching` directly in-process
-/// with zero subprocess execution. On non-Apple platforms (e.g. Linux), this module compiles cleanly and
+/// with zero subprocess execution. On non-Apple platforms (such as Linux), this module compiles cleanly and
 /// emits a structured `SecretResolutionError.providerFailed` (`exitCode = 6`).
 public struct KeychainProvider: SecretProvider, Sendable {
+    /// URI schemes resolved by this provider (`["keychain"]`).
     public let supportedSchemes: Set<String> = ["keychain"]
 
     /// Optional default Keychain access group (`kSecAttrAccessGroup`) used when the URI omits `?accessGroup=...`.
@@ -50,6 +61,12 @@ public struct KeychainProvider: SecretProvider, Sendable {
         return KeychainBackendResponse(status: status, data: item as? Data)
     }
 
+    /// Creates a native Keychain secret provider with an injectable query backend.
+    ///
+    /// - Parameters:
+    ///   - accessGroup: Optional default Keychain access group (`kSecAttrAccessGroup`).
+    ///   - synchronizable: Optional default iCloud Keychain synchronizable filter (`kSecAttrSynchronizable`).
+    ///   - backend: Lookup closure executing the `SecItemCopyMatching` dictionary query. Defaults to ``systemBackend``.
     public init(
         accessGroup: String? = nil,
         synchronizable: Bool? = nil,
@@ -60,6 +77,11 @@ public struct KeychainProvider: SecretProvider, Sendable {
         self.backend = backend
     }
     #else
+    /// Creates a Keychain secret provider stub on non-Apple platforms.
+    ///
+    /// - Parameters:
+    ///   - accessGroup: Optional default Keychain access group (`kSecAttrAccessGroup`).
+    ///   - synchronizable: Optional default iCloud Keychain synchronizable filter (`kSecAttrSynchronizable`).
     public init(
         accessGroup: String? = nil,
         synchronizable: Bool? = nil
@@ -69,6 +91,13 @@ public struct KeychainProvider: SecretProvider, Sendable {
     }
     #endif
 
+    /// Resolves a batch of `keychain://<service>/<account>` references directly in-process via `Security.framework`.
+    ///
+    /// - Parameters:
+    ///   - references: The `SecretReference` items to resolve. Non-`keychain://` items are ignored.
+    ///   - context: Active `SettingsContext` whose `redactor` registers all resolved secret bytes.
+    /// - Returns: A dictionary mapping each resolved `SecretReference` to its raw secret `Data`.
+    /// - Throws: `SecretResolutionError` or `SecretBatchPartialFailureError` if an item is missing, locked, or unsupported on the current platform.
     public func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
@@ -125,6 +154,13 @@ public struct KeychainProvider: SecretProvider, Sendable {
 
     #if canImport(Security)
     /// Builds the `SecItemCopyMatching` query dictionary for a `KeychainSecretReference`.
+    ///
+    /// - Parameters:
+    ///   - reference: Parsed `keychain://` secret reference containing service, account, and query attributes.
+    ///   - defaultAccessGroup: Fallback `kSecAttrAccessGroup` applied when the URI omits `?accessGroup=...`.
+    ///   - defaultSynchronizable: Fallback `kSecAttrSynchronizable` applied when the URI omits `?synchronizable=...`.
+    /// - Returns: A Security framework query dictionary requesting `kSecReturnData` and `kSecMatchLimitOne`.
+    /// - Throws: `SecretResolutionError.invalidReference` if segments or query parameters are malformed.
     public static func buildSecItemQuery(
         for reference: KeychainSecretReference,
         defaultAccessGroup: String? = nil,
@@ -244,7 +280,12 @@ public struct KeychainProvider: SecretProvider, Sendable {
 }
 
 extension SecretProvider where Self == KeychainProvider {
-    /// Native Apple `Security.framework` Keychain secret provider (`keychain://<service>/<account>`).
+    /// Creates a native Apple `Security.framework` Keychain secret provider (`keychain://<service>/<account>`).
+    ///
+    /// - Parameters:
+    ///   - accessGroup: Optional default Keychain access group (`kSecAttrAccessGroup`).
+    ///   - synchronizable: Optional default iCloud Keychain synchronizable filter (`kSecAttrSynchronizable`).
+    /// - Returns: A configured ``KeychainProvider``.
     public static func keychain(
         accessGroup: String? = nil,
         synchronizable: Bool? = nil

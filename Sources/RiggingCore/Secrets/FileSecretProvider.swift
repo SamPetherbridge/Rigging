@@ -1,18 +1,38 @@
 import Foundation
 
-/// Built-in `SecretProvider` resolving `file:///abs/path` and `@~/path` / `@/abs/path` / `@./rel/path`
-/// references via `SettingsContext.fileSystem` while enforcing strict POSIX file permissions (`0600` by default).
+/// Built-in ``SecretProvider`` resolving `file:///abs/path` and `@~/path` / `@/abs/path` / `@./rel/path`
+/// references via ``SettingsContext/fileSystem`` while enforcing strict POSIX file permissions.
+///
+/// By default, `FileSecretProvider` requires secret files to forbid group and world permissions
+/// (`0o600` mask; any `perms & 0o077 != 0` triggers ``SecretResolutionError/insecureFilePermissions(path:actualPermissions:requiredPermissions:)``
+/// with exit code `4` and a copy-pasteable `chmod 600 <path>` remediation).
+///
+/// ```swift
+/// let provider = FileSecretProvider(requiredPermissions: 0o600)
+/// ```
 public struct FileSecretProvider: SecretProvider, Sendable {
+    /// Supported URI schemes (`["file"]`).
     public let supportedSchemes: Set<String> = ["file"]
 
-    /// Required maximum POSIX permission mask (`0o600` by default, rejecting any group or world access `perms & 0o077 != 0`).
-    /// Pass `nil` only to disable POSIX permission checks explicitly.
+    /// Maximum allowed POSIX permission mask (`0o600` by default), or `nil` when permission checks are disabled.
     public let requiredPermissions: UInt16?
 
+    /// Creates a local-file secret provider.
+    ///
+    /// - Parameter requiredPermissions: Maximum allowed POSIX permission mask (`0o600` by default),
+    ///   or `nil` to disable POSIX mode verification.
     public init(requiredPermissions: UInt16? = 0o600) {
         self.requiredPermissions = requiredPermissions
     }
 
+    /// Resolves a batch of `.file(...)` secret references against ``SettingsContext/fileSystem``.
+    ///
+    /// - Parameters:
+    ///   - references: Deduplicated ``SecretReference`` items to read.
+    ///   - context: Execution context providing filesystem, path resolution, and redactor access.
+    /// - Returns: Dictionary mapping each resolved ``SecretReference`` to its raw file `Data`.
+    /// - Throws: ``SecretResolutionError`` on missing or over-permissive files, or ``SecretBatchPartialFailureError``
+    ///   when a multi-file batch partially succeeds.
     public func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
@@ -104,9 +124,14 @@ public struct FileSecretProvider: SecretProvider, Sendable {
         return (resolvedPath, data)
     }
 
-    /// Expands `~` / `~/` against `homeDirectory`, resolves relative paths against `workingDirectory`,
-    /// and lexically normalizes `.` and `..` segments so both `LocalFileSystem` and in-memory mock filesystems
-    /// behave identically.
+    /// Expands leading `~` against `homeDirectory`, resolves relative paths against `workingDirectory`,
+    /// and lexically normalizes `.` and `..` segments.
+    ///
+    /// - Parameters:
+    ///   - rawPath: Raw path string to normalize.
+    ///   - workingDirectory: Base directory for relative paths.
+    ///   - homeDirectory: Home directory substituted for leading `~` or `~/`.
+    /// - Returns: Normalized filesystem path string.
     public static func resolvePath(
         _ rawPath: String,
         workingDirectory: String,
@@ -125,6 +150,12 @@ public struct FileSecretProvider: SecretProvider, Sendable {
         return normalizeLexicalPath(combined)
     }
 
+    /// Expands a leading `~` or `~/` prefix using `homeDirectory`.
+    ///
+    /// - Parameters:
+    ///   - path: Input path that may start with `~`.
+    ///   - homeDirectory: Home directory path (for example, `"/Users/jane"`).
+    /// - Returns: Path with any leading tilde expanded.
     public static func expandHome(_ path: String, homeDirectory: String) -> String {
         let cleanHome = homeDirectory.hasSuffix("/") && homeDirectory.count > 1
             ? String(homeDirectory.dropLast())
@@ -164,6 +195,10 @@ public struct FileSecretProvider: SecretProvider, Sendable {
 }
 
 extension SecretProvider where Self == FileSecretProvider {
+    /// Creates a local-file ``FileSecretProvider`` enforcing the given POSIX permission mask.
+    ///
+    /// - Parameter requiredPermissions: Maximum allowed POSIX permission mask (`0o600` by default).
+    /// - Returns: Configured ``FileSecretProvider``.
     public static func file(requiredPermissions: UInt16? = 0o600) -> FileSecretProvider {
         FileSecretProvider(requiredPermissions: requiredPermissions)
     }
