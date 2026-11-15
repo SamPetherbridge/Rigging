@@ -2,12 +2,37 @@ import Foundation
 import RiggingCore
 
 extension SettingsContext {
-    /// Creates a 100% hermetic, zero-I/O `SettingsContext` backed by `InMemoryFileSystem`
-    /// and `MockSubprocessRunner`.
+    /// Creates a hermetic, zero-I/O `SettingsContext` backed by ``InMemoryFileSystem``
+    /// and ``MockSubprocessRunner``.
     ///
-    /// Built-in `FileSecretProvider` and `IndirectEnvProvider` are included before any custom
-    /// `secretProviders` by default (custom providers listed in `secretProviders` take precedence
-    /// when handling the same scheme).
+    /// Built-in `FileSecretProvider` and `IndirectEnvProvider` are registered automatically when
+    /// `includeBuiltInSecretProviders` is `true`, followed by any mock providers in `secretProviders`.
+    ///
+    /// ```swift
+    /// let context = SettingsContext.inMemory(
+    ///     environment: ["APP_PORT": "9090"],
+    ///     files: ["/repo/.app.json": #"{"host": "127.0.0.1"}"#],
+    ///     directories: ["/repo/.git"]
+    /// )
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - cli: Explicit `SettingOverride` items applied at CLI precedence.
+    ///   - environment: Simulated process environment variables.
+    ///   - files: UTF-8 text files keyed by path.
+    ///   - binaryFiles: Raw `Data` files keyed by path.
+    ///   - directories: Explicit directories to create (such as `"/repo/.git"`).
+    ///   - filePermissions: Explicit POSIX permission overrides keyed by path.
+    ///   - executables: File paths marked as executable binaries (`0o755`).
+    ///   - workingDirectory: Simulated working directory (defaults to `"/repo"`).
+    ///   - homeDirectory: Simulated user home directory (defaults to `"/Users/test"`).
+    ///   - fileSystem: Optional prebuilt `FileSystem` instance overriding `files` / `directories`.
+    ///   - subprocessRunner: Optional `SubprocessRunner` overriding the default ``MockSubprocessRunner``.
+    ///   - secretProviders: Mock or custom `SecretProvider` instances to register.
+    ///   - includeBuiltInSecretProviders: Whether `FileSecretProvider` and `IndirectEnvProvider` are included.
+    ///   - redactor: Redactor instance used to scrub sensitive values from diagnostics.
+    ///   - secretCache: Optional shared secret resolution cache.
+    /// - Returns: A fully isolated `SettingsContext` suitable for parallel unit tests.
     public static func inMemory(
         cli: [SettingOverride] = [],
         environment: [String: String] = [:],
@@ -55,9 +80,27 @@ extension SettingsContext {
         )
     }
 
-    /// Creates a 100% hermetic, zero-I/O `SettingsContext` converting dictionary CLI entries
-    /// (such as `cli: ["readOnly": true]` or `cli: ["signing.enabled": true]`) into explicit
-    /// `SettingOverride` items with kebab-case CLI flag origins (e.g. `.cliArgument(flag: "--read-only")`).
+    /// Creates a hermetic, zero-I/O `SettingsContext` converting dictionary CLI entries
+    /// (such as `cli: ["readOnly": true]` or `cli: ["signing.teamId": "TEAM1"]`) into explicit
+    /// `SettingOverride` items with kebab-case CLI flag origins (for example, `.cliArgument(flag: "--read-only")`).
+    ///
+    /// - Parameters:
+    ///   - cli: Dictionary of CLI override keys and values (`nil` optionals are omitted automatically).
+    ///   - environment: Simulated process environment variables.
+    ///   - files: UTF-8 text files keyed by path.
+    ///   - binaryFiles: Raw `Data` files keyed by path.
+    ///   - directories: Explicit directories to create (such as `"/repo/.git"`).
+    ///   - filePermissions: Explicit POSIX permission overrides keyed by path.
+    ///   - executables: File paths marked as executable binaries (`0o755`).
+    ///   - workingDirectory: Simulated working directory (defaults to `"/repo"`).
+    ///   - homeDirectory: Simulated user home directory (defaults to `"/Users/test"`).
+    ///   - fileSystem: Optional prebuilt `FileSystem` instance overriding `files` / `directories`.
+    ///   - subprocessRunner: Optional `SubprocessRunner` overriding the default ``MockSubprocessRunner``.
+    ///   - secretProviders: Mock or custom `SecretProvider` instances to register.
+    ///   - includeBuiltInSecretProviders: Whether `FileSecretProvider` and `IndirectEnvProvider` are included.
+    ///   - redactor: Redactor instance used to scrub sensitive values from diagnostics.
+    ///   - secretCache: Optional shared secret resolution cache.
+    /// - Returns: A fully isolated `SettingsContext` suitable for parallel unit tests.
     public static func inMemory(
         cli: [String: Any],
         environment: [String: String] = [:],
@@ -94,10 +137,13 @@ extension SettingsContext {
         )
     }
 
-    /// Converts a `[String: Any]` CLI override dictionary (e.g. `["readOnly": true]`) into
+    /// Converts a `[String: Any]` CLI override dictionary (for example, `["readOnly": true]`) into
     /// deterministic `SettingOverride` items with `.cliArgument(flag: "--read-only")` provenance.
     ///
-    /// Any `nil` optional values inside `dictionary` are omitted so unset flags never clobber lower layers.
+    /// Any `nil` optional values inside `dictionary` are omitted so unset flags never clobber lower-priority sources.
+    ///
+    /// - Parameter dictionary: Raw CLI override dictionary keyed by property path or `--flag` name.
+    /// - Returns: Deterministic array of `SettingOverride` values sorted by key.
     public static func cliOverrides(from dictionary: [String: Any]) -> [SettingOverride] {
         var overrides: [SettingOverride] = []
         for rawKey in dictionary.keys.sorted() {
@@ -261,5 +307,57 @@ extension SettingsContext {
             return .object(map)
         }
         return .string(String(describing: value))
+    }
+}
+
+extension RiggedSettings {
+    /// Loads and validates `Self` hermetically in memory without touching the host environment,
+    /// filesystem, Keychain, or subprocesses.
+    ///
+    /// ```swift
+    /// let settings = try await AppSettings.loadInMemory(
+    ///     environment: ["APP_HOST": "staging.example.com"],
+    ///     secretProviders: [MockOnePasswordProvider(secrets: ["op://Eng/App/token": "s3cr3t"])]
+    /// )
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - cli: Explicit CLI `SettingOverride` values applied at highest precedence.
+    ///   - environment: Simulated process environment variables.
+    ///   - files: UTF-8 text files keyed by path.
+    ///   - binaryFiles: Raw `Data` files keyed by path.
+    ///   - directories: Explicit directories to create (such as `"/repo/.git"`).
+    ///   - filePermissions: Explicit POSIX permission overrides keyed by path.
+    ///   - executables: File paths marked as executable binaries (`0o755`).
+    ///   - workingDirectory: Simulated working directory (defaults to `"/repo"`).
+    ///   - homeDirectory: Simulated user home directory (defaults to `"/Users/test"`).
+    ///   - secretProviders: Mock or custom `SecretProvider` instances to register.
+    /// - Returns: Validated, secret-resolved `Self` instance.
+    /// - Throws: `SettingsValidationError` when configuration validation or secret resolution fails.
+    public static func loadInMemory(
+        cli: [SettingOverride] = [],
+        environment: [String: String] = [:],
+        files: [String: String] = [:],
+        binaryFiles: [String: Data] = [:],
+        directories: Set<String> = [],
+        filePermissions: [String: UInt16] = [:],
+        executables: Set<String> = [],
+        workingDirectory: String = "/repo",
+        homeDirectory: String = "/Users/test",
+        secretProviders: [any SecretProvider] = []
+    ) async throws -> Self {
+        let context = SettingsContext.inMemory(
+            cli: cli,
+            environment: environment,
+            files: files,
+            binaryFiles: binaryFiles,
+            directories: directories,
+            filePermissions: filePermissions,
+            executables: executables,
+            workingDirectory: workingDirectory,
+            homeDirectory: homeDirectory,
+            secretProviders: secretProviders
+        )
+        return try await load(context: context)
     }
 }

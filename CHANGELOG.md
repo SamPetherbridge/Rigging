@@ -1,0 +1,36 @@
+# Changelog
+
+All notable changes to `Rigging` will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - 2026-11-15
+
+### Added
+
+- **`Rigging` & `RiggingMacros`:**
+  - `@Settings` and `@Rigged` (SwiftUI-safe alias) attached macros synthesizing multi-source loading, nested `@NestedSettings` composition, `$field` `SettingMetadata<Value>` provenance projections, `ProvenanceReport` generation, and Draft 2020-12 JSON Schema / `.env` / Markdown exporters with zero runtime `Mirror` reflection.
+  - `@Setting` and `@SecretSetting` peer macros supporting `aliases` (`.env`, `.configPath`, `.cli`), typed `SettingValidator<T>` rules, `SettingTransform<T>` and `SecretTransform` pipelines, doc-comment extraction, and compile-time diagnostics.
+- **`RiggingCore` (Zero External Dependencies):**
+  - Deterministic 8-layer configuration cascade (`InitSource`, `EnvironmentSource`, `DotEnvSource`, `SecretsDirSource`, `ProjectConfigSource`, `UserConfigSource`, `ManagedPreferencesSource`, and Swift defaults) with full winning and shadowed `SettingOrigin` provenance.
+  - RFC-compatible `.env` parser supporting `export`, single/double/unquoted strings, multiline PEM blocks, `#` comments, `${VAR}` / `${VAR:-default}` / `${VAR-default}` interpolation, and exact 1-based line tracking.
+  - Upward project config discovery (stopping inclusively at `.git` or `$HOME`), XDG / Application Support user config lookup, named `"profiles"` overlays, and `ExtraKeysPolicy` (`.ignore`, `.warn`, `.forbid`, `.allow`).
+  - Rich `SettingValueDecodable` support for scalars, flexible `Bool` literals, fixed-width integers, floating-point types, `Decimal`, `UUID`, `URL`, ISO-8601 `Date`, `Data`, `Duration` (`30s`, `500ms`, `5m`, `1h`), `ByteCount` (`512KB`, `10MB`, `2GiB`), case-insensitive `RawRepresentable` enums, and `EnvCollectionStrategy` collections.
+  - Leak-proof `Secret<Value>` (`"**********"` across descriptions, `Mirror`, and default `Encodable`), `Synchronization.Mutex`-backed `DiagnosticRedactor`, atomic `0700`/`0600` `withEphemeralFile` materializer with zero-overwrite cleanup, two-phase batched `SecretResolver` with TTL `SecretResolutionCache`, `FileSecretProvider` (`0600` check), and `IndirectEnvProvider`.
+  - Multi-issue `SettingsValidationError` aggregation (`LocalizedError` + deterministic JSON payload) with exit code taxonomy (`2` validation/missing, `4` unsafe secret storage, `6` external provider failure) and `SettingsWatcher` live reloader (`SIGHUP` + file polling).
+- **Secret Provider Modules:**
+  - `RiggingOnePassword`: Single-pass `op inject` batch resolution over in-memory pipes with 128-bit cryptographic boundary nonces, OTP & document support, Service Account & `--account` routing, and 1Password Connect REST API support (`FoundationNetworking` compatible on Linux).
+  - `RiggingKeychain`: Direct in-process `Security.framework` `SecItemCopyMatching` lookups for generic and internet passwords (`accessGroup`, `synchronizable`).
+  - `RiggingBitwarden`: Bitwarden Secrets Manager (`bws://`) and Vault CLI (`bw://`) batch resolution.
+  - `RiggingUnixPass`: `pass` (`pass://` line, `#full`, `#line:N`, and `#key` metadata extraction) and `sops` (`sops://` in-memory RFC 6901 JSON Pointer resolution).
+- **Ecosystem & Format Modules:**
+  - `RiggingArgumentParser`: Non-clobbering `ParsableArguments` / `RiggingCLIOptions` bridge (omitting unset `nil` optionals) and turnkey `ConfigSubcommand<Settings>` (`config show`, `config doctor`, `config schema`, `config init`).
+  - `RiggingSwiftConfiguration`: Bidirectional adapter (`SwiftConfigurationSource` and `asConfigProvider()` / `asConfigReader()`) for `apple/swift-configuration` preserving `isSecret: true` on all `@SecretSetting` fields.
+  - `RiggingTOML`: Zero-dependency pure-Swift TOML v1.0 parser and `TOMLProjectConfigSource` / `TOMLUserConfigSource`.
+  - `RiggingYAML`: `Yams`-backed `YAMLFileSource`, `YAMLProjectConfigSource`, and `YAMLUserConfigSource` with `<<` merge-key and `profiles` support.
+  - `RiggingTesting`: Hermetic `SettingsContext.inMemory(...)`, `InMemoryFileSystem`, `MockOnePasswordProvider`, `MockKeychainProvider`, `MockSubprocessRunner`, and `TestFixtures`.
+- **Documentation & Tooling:**
+  - Multi-module Apple DocC catalogs across all 11 library products with Swift Package Index (`.spi.yml`) configuration and `swift-docc-plugin` integration.

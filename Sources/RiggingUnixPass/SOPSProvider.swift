@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(CoreFoundation)
+#if canImport(ObjectiveC) && canImport(CoreFoundation)
 import CoreFoundation
 #endif
 import RiggingCore
@@ -10,6 +10,7 @@ import RiggingCore
 /// (`["--decrypt", "--output-type", "json", resolvedPath]`) and traverses RFC 6901 JSON Pointers (`/a/b/0`)
 /// or key paths strictly in-memory so arbitrary key names can never inject SOPS Python-style `--extract` slice syntax.
 public struct SOPSProvider: SecretProvider, Sendable {
+    /// URI schemes resolved by this provider (`["sops"]`).
     public let supportedSchemes: Set<String> = ["sops"]
 
     /// Optional explicit absolute path to the `sops` CLI binary.
@@ -24,6 +25,13 @@ public struct SOPSProvider: SecretProvider, Sendable {
     /// Subprocess execution timeout per CLI call.
     public let timeout: Duration?
 
+    /// Creates a Mozilla SOPS encrypted-file secret provider (`sops://<file-path>#<json-pointer-or-key>`).
+    ///
+    /// - Parameters:
+    ///   - executablePath: Optional explicit absolute path to a trusted `sops` executable.
+    ///   - ageKeyFile: Optional path to an `age` private key file forwarded as `SOPS_AGE_KEY_FILE`.
+    ///   - searchDirectories: Trusted absolute system directories searched when `executablePath` is `nil`.
+    ///   - timeout: Maximum execution duration per `sops` invocation. Defaults to 30 seconds.
     public init(
         executablePath: String? = nil,
         ageKeyFile: String? = nil,
@@ -41,6 +49,13 @@ public struct SOPSProvider: SecretProvider, Sendable {
         self.timeout = timeout
     }
 
+    /// Resolves a batch of `sops://` references, decrypting each unique encrypted file at most once per batch.
+    ///
+    /// - Parameters:
+    ///   - references: The `SecretReference` items to resolve. Non-`sops://` items are ignored.
+    ///   - context: Active `SettingsContext` supplying working/home directories, environment, subprocess runner, and redactor.
+    /// - Returns: A dictionary mapping each resolved `SecretReference` to its extracted secret `Data`.
+    /// - Throws: `SecretResolutionError` or `SecretBatchPartialFailureError` if file decryption, key access, or JSON pointer lookup fails.
     public func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
@@ -339,14 +354,21 @@ public struct SOPSProvider: SecretProvider, Sendable {
             return Data(str.utf8)
         }
 
+        #if canImport(ObjectiveC) && canImport(CoreFoundation)
         if let number = value as? NSNumber {
-            #if canImport(CoreFoundation)
             if CFGetTypeID(number) == CFBooleanGetTypeID() {
                 return Data((number.boolValue ? "true" : "false").utf8)
             }
-            #endif
             return Data(number.stringValue.utf8)
         }
+        #else
+        if let boolValue = value as? Bool {
+            return Data((boolValue ? "true" : "false").utf8)
+        }
+        if let number = value as? NSNumber {
+            return Data(number.stringValue.utf8)
+        }
+        #endif
 
         if JSONSerialization.isValidJSONObject(value) {
             return try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
@@ -492,7 +514,13 @@ public struct SOPSProvider: SecretProvider, Sendable {
 }
 
 extension SecretProvider where Self == SOPSProvider {
-    /// Mozilla SOPS encrypted-file secret provider (`sops://<file-path>#<json-pointer-or-key>`).
+    /// Creates a Mozilla SOPS encrypted-file secret provider (`sops://<file-path>#<json-pointer-or-key>`).
+    ///
+    /// - Parameters:
+    ///   - executablePath: Optional explicit absolute path to a trusted `sops` binary.
+    ///   - ageKeyFile: Optional path to an `age` secret key file forwarded as `SOPS_AGE_KEY_FILE`.
+    ///   - timeout: Maximum execution duration per CLI invocation. Defaults to 30 seconds.
+    /// - Returns: A configured ``SOPSProvider``.
     public static func sops(
         executablePath: String? = nil,
         ageKeyFile: String? = nil,

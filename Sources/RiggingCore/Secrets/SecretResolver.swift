@@ -2,56 +2,105 @@ import Foundation
 
 // MARK: - SecretProvider Protocol
 
-/// Pluggable secret manager backend capable of resolving batches of `SecretReference` items.
+/// A pluggable secret-manager backend capable of resolving deduplicated batches of ``SecretReference`` values.
+///
+/// ``SecretResolver`` partitions all secret references across a configuration load by `(scheme, accountHint)`
+/// and invokes ``resolveBatch(_:context:)`` at most once per partition so external CLIs (`op`, `bws`, `bw`, `pass`)
+/// authenticate and execute in a single round-trip.
+///
+/// ```swift
+/// struct VaultSecretProvider: SecretProvider {
+///     let supportedSchemes: Set<String> = ["vault"]
+///
+///     func resolveBatch(
+///         _ references: [SecretReference],
+///         context: SettingsContext
+///     ) async throws -> [SecretReference: Data] {
+///         // Fetch all requested references in one call...
+///         [:]
+///     }
+/// }
+/// ```
 public protocol SecretProvider: Sendable {
-    /// URI schemes handled by this provider (e.g. `["op"]`, `["keychain"]`, `["bws", "bw"]`, `["file"]`, `["env"]`).
+    /// Lowercase URI schemes handled by this provider (for example, `["op"]`, `["keychain"]`, or `["bws", "bw"]`).
     var supportedSchemes: Set<String> { get }
 
-    /// Resolves a deduplicated batch of `SecretReference` items sharing a scheme and `accountHint`.
+    /// Resolves a deduplicated batch of ``SecretReference`` items sharing a scheme and ``SecretReference/accountHint``.
+    ///
+    /// - Parameters:
+    ///   - references: Unique secret references to fetch.
+    ///   - context: Execution context providing filesystem, subprocess runner, environment, and ``DiagnosticRedactor``.
+    /// - Returns: Dictionary mapping each resolved ``SecretReference`` to its raw secret `Data`.
+    /// - Throws: ``SecretResolutionError`` when the entire batch fails, or ``SecretBatchPartialFailureError``
+    ///   when a subset of references succeeded while others failed.
     func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
     ) async throws -> [SecretReference: Data]
 }
 
-/// Thrown by a `SecretProvider` when some references in a multi-item batch succeeded while others failed,
-/// allowing `SecretResolver` to attribute per-reference errors accurately without failing sibling secrets.
-public struct SecretBatchPartialFailureError: Error, Sendable {
+/// Thrown by a ``SecretProvider`` when a subset of items in a multi-reference batch resolved while others failed.
+///
+///Throwing `SecretBatchPartialFailureError` allows ``SecretResolver`` to preserve resolved sibling secrets
+/// and attribute exact per-field errors without failing the entire batch identically.
+public struct SecretBatchPartialFailureError: Error, Sendable, CustomStringConvertible, LocalizedError {
+    /// Successfully resolved references and their secret byte payloads.
     public let resolved: [SecretReference: Data]
+
+    /// Per-reference errors for items in the batch that failed to resolve.
     public let failures: [SecretReference: any Error]
 
+    /// Creates a partial batch failure report.
+    ///
+    /// - Parameters:
+    ///   - resolved: References that resolved successfully.
+    ///   - failures: References that failed, mapped to their individual errors.
     public init(resolved: [SecretReference: Data], failures: [SecretReference: any Error]) {
         self.resolved = resolved
         self.failures = failures
+    }
+
+    /// Redacted summary of resolved vs. failed secret references in the batch.
+    public var description: String {
+        let details = failures
+            .map { "\($0.key.redactedDescription): \($0.value.localizedDescription)" }
+            .sorted()
+            .joined(separator: "; ")
+        return "Partial secret batch failure (\(resolved.count) resolved, \(failures.count) failed: \(details))"
+    }
+
+    /// Localized error description matching ``description`` for CLI error reporters.
+    public var errorDescription: String? {
+        description
     }
 }
 
 // MARK: - SecretResolutionError
 
-/// Structured errors surfaced during secret URI parsing, safety checks, provider execution, or transforms.
-public enum SecretResolutionError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
-    /// Exit code `4`: Plaintext literal secret committed in a project configuration file.
+/// Structured errors surfaced during secret URI parsing, storage-safety verification, provider execution, or byte transforms.
+public enum SecretResolutionError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
+    /// Exit code `4`: Plaintext literal secret was found in a repo-committed project configuration file.
     case unsafePlaintextInProjectConfig(keyPath: [String], origin: SettingOrigin)
 
-    /// Exit code `4`: Secret file has overly permissive group/world POSIX mode bits (e.g. `0644` instead of `0600`).
+    /// Exit code `4`: Secret file has group or world POSIX permissions (for example, `0644` instead of `0600`).
     case insecureFilePermissions(path: String, actualPermissions: UInt16, requiredPermissions: UInt16)
 
-    /// Exit code `4`: Secret provider CLI binary failed executable trust verification (e.g. relative path or world-writable mode).
+    /// Exit code `4`: Secret provider CLI binary failed executable trust verification.
     case unsafeExecutable(scheme: String, path: String, reason: String, remediation: String? = nil)
 
     /// Exit code `6`: Referenced local secret file does not exist or is a directory.
     case secretFileNotFound(path: String)
 
-    /// Exit code `6`: Failed to read bytes from local secret file.
+    /// Exit code `6`: Failed to read bytes from a local secret file.
     case secretFileReadFailed(path: String, reason: String)
 
     /// Exit code `6`: Indirect `env://<VAR>` environment variable is unset or empty.
     case environmentVariableNotSet(variableName: String)
 
-    /// Exit code `6`: No `SecretProvider` in `SettingsContext.secretProviders` supports the URI scheme.
+    /// Exit code `6`: No ``SecretProvider`` in ``SettingsContext/secretProviders`` supports the URI scheme.
     case unregisteredScheme(scheme: String, referenceRedacted: String)
 
-    /// Exit code `6`: Provider returned a batch dictionary omitting a requested `SecretReference`.
+    /// Exit code `6`: Provider returned a batch dictionary omitting a requested ``SecretReference``.
     case unresolvedReference(referenceRedacted: String)
 
     /// Exit code `6`: Secret provider authentication or session unlock failure.
@@ -63,12 +112,13 @@ public enum SecretResolutionError: Error, Sendable, Equatable, CustomStringConve
     /// Exit code `6`: General secret provider invocation failure.
     case providerFailed(scheme: String, message: String, remediation: String? = nil)
 
-    /// Exit code `2`: Malformed or option-injection-unsafe `SecretReference`.
+    /// Exit code `2`: Malformed or option-injection-unsafe ``SecretReference``.
     case invalidReference(SecretReferenceError)
 
-    /// Exit code `2`: Post-resolution `SecretTransform` failed (e.g. invalid Base64 or non-UTF8 bytes).
+    /// Exit code `2`: Post-resolution ``SecretTransform`` step failed.
     case transformFailed(transform: String, reason: String)
 
+    /// Maps this error to its corresponding ``ValidationIssueKind`` bucket.
     public var issueKind: ValidationIssueKind {
         switch self {
         case .unsafePlaintextInProjectConfig, .insecureFilePermissions, .unsafeExecutable:
@@ -87,10 +137,12 @@ public enum SecretResolutionError: Error, Sendable, Equatable, CustomStringConve
         }
     }
 
+    /// Deterministic CLI exit code (`4` for unsafe secret storage, `6` for provider failures, `2` for invalid syntax/transforms).
     public var exitCode: Int32 {
         issueKind.exitCode
     }
 
+    /// Optional actionable remediation guidance (such as `chmod 600 <path>` or `op signin`).
     public var remediation: String? {
         switch self {
         case .unsafePlaintextInProjectConfig:
@@ -123,6 +175,7 @@ public enum SecretResolutionError: Error, Sendable, Equatable, CustomStringConve
         }
     }
 
+    /// Human-readable error message safe for terminal diagnostics.
     public var description: String {
         switch self {
         case .unsafePlaintextInProjectConfig:
@@ -159,10 +212,15 @@ public enum SecretResolutionError: Error, Sendable, Equatable, CustomStringConve
         }
     }
 
+    /// Localized error description matching ``description`` for CLI error reporters.
     public var errorDescription: String? {
         description
     }
 
+    /// Formats a POSIX permission bitmask as a zero-padded four-digit octal string (for example, `"0644"`).
+    ///
+    /// - Parameter permissions: POSIX mode bits.
+    /// - Returns: Four-digit octal string.
     public static func formatFourDigitOctal(_ permissions: UInt16) -> String {
         let masked = permissions & 0o777
         let digits = String(masked, radix: 8)
@@ -172,6 +230,10 @@ public enum SecretResolutionError: Error, Sendable, Equatable, CustomStringConve
         return String(repeating: "0", count: 4 - digits.count) + digits
     }
 
+    /// Formats a POSIX permission bitmask as a three-digit `chmod` octal argument (for example, `"600"`).
+    ///
+    /// - Parameter permissions: POSIX mode bits.
+    /// - Returns: Three-digit octal string suitable for `chmod`.
     public static func formatChmodOctal(_ permissions: UInt16) -> String {
         let masked = permissions & 0o777
         let digits = String(masked, radix: 8)
@@ -184,8 +246,18 @@ public enum SecretResolutionError: Error, Sendable, Equatable, CustomStringConve
 
 // MARK: - Actor-Isolated SecretResolutionCache
 
-/// Actor-isolated TTL cache for resolved secret bytes, intended for long-running daemons or servers.
+/// Actor-isolated time-to-live (TTL) cache for resolved secret bytes in long-running services and daemons.
+///
+/// Short-lived CLIs leave ``SettingsContext/secretCache`` set to `nil` by default so resolved secrets
+/// are never retained beyond the load pass. Long-running servers or ``SettingsWatcher`` instances can
+/// attach a `SecretResolutionCache` to avoid redundant external vault round-trips during live reloads.
+///
+/// ```swift
+/// let cache = SecretResolutionCache(ttl: .seconds(300))
+/// let context = SettingsContext(secretCache: cache)
+/// ```
 public actor SecretResolutionCache {
+    /// Time-to-live duration applied to stored entries.
     public let ttl: Duration
 
     private struct Entry: Sendable {
@@ -196,7 +268,11 @@ public actor SecretResolutionCache {
     private let nowProvider: @Sendable () -> ContinuousClock.Instant
     private var storage: [SecretReference: Entry] = [:]
 
-    /// Creates a secret resolution cache with a configurable TTL (default `300` seconds).
+    /// Creates an actor-isolated secret resolution cache.
+    ///
+    /// - Parameters:
+    ///   - ttl: Expiration duration for cached entries (defaults to `300` seconds).
+    ///   - now: Monotonic clock closure used for expiration checks (injectable for deterministic unit tests).
     public init(
         ttl: Duration = .seconds(300),
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
@@ -205,7 +281,10 @@ public actor SecretResolutionCache {
         self.nowProvider = now
     }
 
-    /// Looks up a single non-expired cached secret value.
+    /// Looks up a cached, non-expired secret byte payload for `reference`.
+    ///
+    /// - Parameter reference: Secret reference to query.
+    /// - Returns: Cached `Data` if present and unexpired, or `nil` otherwise.
     public func value(for reference: SecretReference) -> Data? {
         let current = nowProvider()
         guard let entry = storage[reference] else { return nil }
@@ -216,7 +295,10 @@ public actor SecretResolutionCache {
         return entry.data
     }
 
-    /// Partitions `references` into cached hits and uncached/expired misses in a single actor hop.
+    /// Partitions `references` into unexpired cache hits and missing/expired references in one actor call.
+    ///
+    /// - Parameter references: Candidate secret references to inspect.
+    /// - Returns: Tuple of cached `Data` hits and uncached `missing` references.
     public func values(
         for references: [SecretReference]
     ) -> (cached: [SecretReference: Data], missing: [SecretReference]) {
@@ -240,14 +322,20 @@ public actor SecretResolutionCache {
         return (cached, missing)
     }
 
-    /// Stores a single resolved secret value with the cache's configured TTL.
+    /// Stores a single resolved secret value with the configured ``ttl``.
+    ///
+    /// - Parameters:
+    ///   - data: Resolved secret bytes.
+    ///   - reference: Associated ``SecretReference`` key.
     public func store(_ data: Data, for reference: SecretReference) {
         guard ttl > .zero else { return }
         let expiresAt = nowProvider().advanced(by: ttl)
         storage[reference] = Entry(data: data, expiresAt: expiresAt)
     }
 
-    /// Stores a batch of resolved secret values with the cache's configured TTL.
+    /// Stores a dictionary of resolved secret values with the configured ``ttl``.
+    ///
+    /// - Parameter values: Resolved secret byte payloads keyed by ``SecretReference``.
     public func store(_ values: [SecretReference: Data]) {
         guard ttl > .zero, !values.isEmpty else { return }
         let expiresAt = nowProvider().advanced(by: ttl)
@@ -256,17 +344,19 @@ public actor SecretResolutionCache {
         }
     }
 
-    /// Removes a specific cached secret reference.
+    /// Evicts a single cached secret reference immediately.
+    ///
+    /// - Parameter reference: Secret reference to remove.
     public func invalidate(_ reference: SecretReference) {
         storage.removeValue(forKey: reference)
     }
 
-    /// Clears all cached secret entries immediately.
+    /// Evicts all cached secret entries immediately.
     public func invalidateAll() {
         storage.removeAll()
     }
 
-    /// Number of non-expired entries currently held in the cache.
+    /// Number of unexpired secret entries currently held in the cache.
     public var count: Int {
         let current = nowProvider()
         storage = storage.filter { $0.value.expiresAt > current }
@@ -276,25 +366,37 @@ public actor SecretResolutionCache {
 
 // MARK: - SecretTransform Pipeline
 
-/// Post-resolution value transformation steps applied to a secret's raw bytes.
+/// Post-resolution byte transformations applied to a secret's raw payload before typed decoding.
 public enum SecretTransform: Sendable, Equatable, Hashable {
-    /// Trims leading and trailing whitespace and newlines.
+    /// Trims leading and trailing whitespace and newline characters.
     case trimWhitespace
-    /// Expands leading `~` or `~/` against `context.homeDirectory`.
+
+    /// Expands a leading `~` or `~/` prefix against ``SettingsContext/homeDirectory``.
     case expandTilde
-    /// Expands `@path` file references (e.g. `@keys/AuthKey.p8` or `@~/key.pem`) using `context.fileSystem`,
-    /// enforcing `requirePermissions` (default `0600`) when non-nil.
+
+    /// Expands `@path` file references (such as `@keys/AuthKey.p8` or `@~/key.pem`) via ``SettingsContext/fileSystem``,
+    /// enforcing `requirePermissions` (`0o600` by default) when non-`nil`.
     case expandFileReference(requirePermissions: UInt16? = 0o600)
-    /// Decodes standard or URL-safe Base64 text into raw bytes.
+
+    /// Decodes standard or URL-safe Base64 text into raw binary bytes.
     case decodeBase64
-    /// Decodes Base64 only when the string starts with `"base64:"`; otherwise passes bytes through unchanged.
+
+    /// Decodes Base64 text only when prefixed with `"base64:"`, leaving unprefixed payloads unchanged.
     case decodeBase64IfPrefixed
-    /// Unescapes literal `\n` sequences into real newlines and normalizes PEM armor header/body/footer whitespace.
+
+    /// Unescapes literal `\n` sequences and normalizes PEM armor headers, 64-column body lines, and footers.
     case normalizePEM
-    /// Validates that the secret bytes form valid UTF-8 text and returns the UTF-8 `Data`.
+
+    /// Verifies that the secret bytes form valid UTF-8 text.
     case utf8Data
 
-    /// Applies this transform to `data`, returning transformed bytes and whether an `@file` reference was expanded.
+    /// Applies this transformation step to `data`.
+    ///
+    /// - Parameters:
+    ///   - data: Input secret byte buffer.
+    ///   - context: Execution context providing filesystem, home directory, and ``DiagnosticRedactor``.
+    /// - Returns: Tuple containing transformed `data` and any `@file` reference path that was expanded.
+    /// - Throws: ``SecretResolutionError`` if transformation or file permission verification fails.
     public func apply(
         to data: Data,
         context: SettingsContext
@@ -398,7 +500,14 @@ public enum SecretTransform: Sendable, Equatable, Hashable {
         }
     }
 
-    /// Runs a sequence of `SecretTransform`s in order.
+    /// Applies an ordered pipeline of ``SecretTransform`` steps to `initialData`.
+    ///
+    /// - Parameters:
+    ///   - transforms: Ordered transformation steps to execute.
+    ///   - initialData: Raw bytes returned by a ``SecretProvider`` or inline literal.
+    ///   - context: Execution context passed to each step.
+    /// - Returns: Tuple containing final transformed bytes and any expanded `@file` reference label.
+    /// - Throws: ``SecretResolutionError`` if any step in the pipeline fails.
     public static func applyAll(
         _ transforms: [SecretTransform],
         to initialData: Data,
@@ -439,7 +548,6 @@ public enum SecretTransform: Sendable, Equatable, Hashable {
         if let standard = Data(base64Encoded: stripped) {
             return standard
         }
-        // Fallback to URL-safe Base64 (`-` -> `+`, `_` -> `/`, optional `=` padding)
         var urlNormalized = stripped
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
@@ -464,8 +572,6 @@ public enum SecretTransform: Sendable, Equatable, Hashable {
 
         guard !working.isEmpty else { return working }
 
-        // Ensure PEM `-----BEGIN ...-----` and `-----END ...-----` markers sit on dedicated lines
-        // even if the input was supplied as a single space-separated line.
         working = separatePEMMarkersOntoOwnLines(working)
 
         let rawLines = working.split(separator: "\n", omittingEmptySubsequences: false)
@@ -541,15 +647,35 @@ public enum SecretTransform: Sendable, Equatable, Hashable {
 
 // MARK: - Two-Phase Batched SecretResolver
 
-/// Describes a single `@SecretSetting` field queued for batched secret resolution.
+/// Describes a single secret field queued for batched resolution by ``SecretResolver``.
 public struct SecretResolutionRequest: Sendable, Equatable {
+    /// Hierarchical key path of the secret setting.
     public let keyPath: [String]
+
+    /// Winning configuration node containing the raw URI or literal value and its ``SettingOrigin``.
     public let node: RawNode
+
+    /// Ordered post-resolution ``SecretTransform`` steps applied to the resolved bytes.
     public let transforms: [SecretTransform]
+
+    /// Whether inline literal secrets originating from `.projectConfig` are explicitly allowed.
     public let allowLiteralInProjectConfig: Bool
+
+    /// Optional display name of the expected Swift type for diagnostics.
     public let expectedType: String?
+
+    /// Optional canonical environment variable name hint for diagnostics.
     public let envVariableHint: String?
 
+    /// Creates a secret resolution request from a ``RawNode``.
+    ///
+    /// - Parameters:
+    ///   - keyPath: Hierarchical setting key path.
+    ///   - node: Winning configuration node.
+    ///   - transforms: Post-resolution byte transforms.
+    ///   - allowLiteralInProjectConfig: Whether literal values from `.projectConfig` are permitted.
+    ///   - expectedType: Optional expected Swift type display name.
+    ///   - envVariableHint: Optional environment variable remediation hint.
     public init(
         keyPath: [String],
         node: RawNode,
@@ -566,6 +692,17 @@ public struct SecretResolutionRequest: Sendable, Equatable {
         self.envVariableHint = envVariableHint
     }
 
+    /// Creates a secret resolution request from a raw string and provenance metadata.
+    ///
+    /// - Parameters:
+    ///   - keyPath: Hierarchical setting key path.
+    ///   - rawString: Raw configuration string (secret URI or inline literal).
+    ///   - origin: Winning ``SettingOrigin`` of `rawString`.
+    ///   - overriddenOrigins: Lower-priority origins shadowed by `origin`.
+    ///   - transforms: Post-resolution byte transforms.
+    ///   - allowLiteralInProjectConfig: Whether literal values from `.projectConfig` are permitted.
+    ///   - expectedType: Optional expected Swift type display name.
+    ///   - envVariableHint: Optional environment variable remediation hint.
     public init(
         keyPath: [String],
         rawString: String,
@@ -587,14 +724,31 @@ public struct SecretResolutionRequest: Sendable, Equatable {
     }
 }
 
-/// Output of resolving and transforming a single `@SecretSetting` field.
+/// Output of resolving and transforming a single ``SecretResolutionRequest``.
 public struct ResolvedSecret: Sendable, Equatable {
+    /// Hierarchical key path of the resolved secret setting.
     public let keyPath: [String]
+
+    /// Final transformed secret byte payload.
     public let data: Data
+
+    /// Parsed ``SecretReference`` that produced ``data``.
     public let reference: SecretReference
+
+    /// Effective ``SettingOrigin`` (wrapped in `.secretProvider(...)` when resolved via a provider or `@file`).
     public let origin: SettingOrigin
+
+    /// Lower-priority origins shadowed by this setting.
     public let overriddenOrigins: [SettingOrigin]
 
+    /// Creates a resolved secret record.
+    ///
+    /// - Parameters:
+    ///   - keyPath: Hierarchical setting key path.
+    ///   - data: Resolved and transformed secret bytes.
+    ///   - reference: Parsed ``SecretReference``.
+    ///   - origin: Effective provenance origin.
+    ///   - overriddenOrigins: Shadowed lower-priority origins.
     public init(
         keyPath: [String],
         data: Data,
@@ -609,7 +763,10 @@ public struct ResolvedSecret: Sendable, Equatable {
         self.overriddenOrigins = overriddenOrigins
     }
 
-    /// Decodes the resolved bytes as a UTF-8 `Secret<String>`.
+    /// Decodes ``data`` as a UTF-8 ``Secret`` string.
+    ///
+    /// - Returns: A `Secret<String>` wrapping the UTF-8 decoded text.
+    /// - Throws: ``ValueDecodingError`` if ``data`` is not valid UTF-8.
     public func utf8Secret() throws -> Secret<String> {
         guard let string = String(data: data, encoding: .utf8) else {
             throw ValueDecodingError(
@@ -620,17 +777,23 @@ public struct ResolvedSecret: Sendable, Equatable {
         return Secret(string)
     }
 
-    /// Wraps the resolved bytes as `Secret<Data>`.
+    /// Wraps ``data`` in `Secret<Data>`.
     public var dataSecret: Secret<Data> {
         Secret(data)
     }
 
-    /// Wraps the resolved bytes as `Secret<[UInt8]>`.
+    /// Wraps ``data`` as a `Secret<[UInt8]>` byte array.
     public var bytesSecret: Secret<[UInt8]> {
         Secret(Array(data))
     }
 
-    /// Decodes the resolved secret bytes into any `SettingValueDecodable` payload wrapped in `Secret`.
+    /// Decodes ``data`` into any ``SettingValueDecodable`` payload wrapped in ``Secret``.
+    ///
+    /// - Parameters:
+    ///   - type: Target decoded payload type.
+    ///   - context: Value decoding context.
+    /// - Returns: `Secret<Value>` wrapping the decoded value.
+    /// - Throws: ``ValueDecodingError`` if ``data`` is not valid UTF-8 or fails `Value` coercion.
     public func decode<Value: SettingValueDecodable>(
         as type: Value.Type = Value.self,
         context: ValueDecodingContext = ValueDecodingContext()
@@ -651,12 +814,22 @@ public struct ResolvedSecret: Sendable, Equatable {
     }
 }
 
-/// Aggregated result of a two-phase batched secret resolution pass across an entire settings graph.
+/// Aggregated result of a two-phase batched secret resolution pass across a settings model.
 public struct SecretBatchResolutionResult: Sendable, Equatable {
+    /// Successfully resolved secrets in request order.
     public let resolved: [ResolvedSecret]
+
+    /// Lookup table indexing ``resolved`` by ``ResolvedSecret/keyPath``.
     public let resolvedByKeyPath: [[String]: ResolvedSecret]
+
+    /// Validation, unsafe-secret (`exitCode == 4`), and provider (`exitCode == 6`) issues accumulated during the batch.
     public let issues: [ValidationIssue]
 
+    /// Creates a batch resolution result.
+    ///
+    /// - Parameters:
+    ///   - resolved: Resolved secret entries.
+    ///   - issues: Accumulated validation and resolution issues.
     public init(resolved: [ResolvedSecret], issues: [ValidationIssue]) {
         self.resolved = resolved
         var map: [[String]: ResolvedSecret] = [:]
@@ -670,9 +843,15 @@ public struct SecretBatchResolutionResult: Sendable, Equatable {
 }
 
 /// Two-phase batched secret resolver that deduplicates secret URIs across the configuration tree,
-/// groups provider lookups by `(scheme, accountHint)`, enforces repo-committed plaintext guards,
-/// registers resolved plaintext in `DiagnosticRedactor`, and applies `SecretTransform` pipelines.
+/// partitions provider calls by `(scheme, accountHint)`, enforces repo-committed plaintext guards,
+/// registers resolved secrets in ``DiagnosticRedactor``, and runs ``SecretTransform`` pipelines.
+///
+/// ```swift
+/// let resolver = SecretResolver()
+/// let result = await resolver.resolveAll(requests, context: context)
+/// ```
 public struct SecretResolver: Sendable {
+    /// Creates a batched secret resolver.
     public init() {}
 
     private struct BatchKey: Hashable, Sendable {
@@ -691,8 +870,12 @@ public struct SecretResolver: Sendable {
         )
     }
 
-    /// Executes two-phase batched resolution across all `requests`, accumulating any validation,
-    /// unsafe-secret (`exitCode = 4`), or provider (`exitCode = 6`) issues without short-circuiting.
+    /// Resolves all `requests` in deduplicated provider batches without short-circuiting on errors.
+    ///
+    /// - Parameters:
+    ///   - requests: Secret resolution requests collected from top-level and nested settings fields.
+    ///   - context: Execution context providing registered ``SecretProvider`` backends, optional cache, and ``DiagnosticRedactor``.
+    /// - Returns: A ``SecretBatchResolutionResult`` containing all resolved secrets and accumulated ``ValidationIssue`` items.
     public func resolveAll(
         _ requests: [SecretResolutionRequest],
         context: SettingsContext
@@ -721,7 +904,7 @@ public struct SecretResolver: Sendable {
                         keyPath: request.keyPath,
                         origin: request.node.origin
                     )
-                    issues.append(Self.makeIssue(from: error, for: request))
+                    issues.append(Self.makeIssue(from: error, for: request, redactor: context.redactor))
                     continue
                 }
                 prepared.append(
@@ -740,12 +923,20 @@ public struct SecretResolver: Sendable {
                     issues.append(
                         Self.makeIssue(
                             from: .invalidReference(refError),
-                            for: request
+                            for: request,
+                            redactor: context.redactor
                         )
                     )
                     continue
                 } catch {
-                    issues.append(Self.makeGenericIssue(from: error, for: request, defaultKind: .invalidValue))
+                    issues.append(
+                        Self.makeGenericIssue(
+                            from: error,
+                            for: request,
+                            defaultKind: .invalidValue,
+                            redactor: context.redactor
+                        )
+                    )
                     continue
                 }
 
@@ -768,7 +959,7 @@ public struct SecretResolver: Sendable {
                             keyPath: request.keyPath,
                             origin: request.node.origin
                         )
-                        issues.append(Self.makeIssue(from: error, for: request))
+                        issues.append(Self.makeIssue(from: error, for: request, redactor: context.redactor))
                         continue
                     }
 
@@ -833,7 +1024,7 @@ public struct SecretResolver: Sendable {
                         keyPath: request.keyPath,
                         origin: request.node.origin
                     )
-                    issues.append(Self.makeIssue(from: error, for: request))
+                    issues.append(Self.makeIssue(from: error, for: request, redactor: context.redactor))
                     continue
                 }
 
@@ -973,7 +1164,14 @@ public struct SecretResolver: Sendable {
                         )
                     )
                 } catch {
-                    issues.append(Self.makeGenericIssue(from: error, for: request, defaultKind: .invalidValue))
+                    issues.append(
+                        Self.makeGenericIssue(
+                            from: error,
+                            for: request,
+                            defaultKind: .invalidValue,
+                            redactor: context.redactor
+                        )
+                    )
                 }
 
             case .customPermFile(let request, let ref, let fileRef, let requiredPermissions):
@@ -1011,12 +1209,26 @@ public struct SecretResolver: Sendable {
                         )
                     )
                 } catch {
-                    issues.append(Self.makeGenericIssue(from: error, for: request, defaultKind: .providerFailure))
+                    issues.append(
+                        Self.makeGenericIssue(
+                            from: error,
+                            for: request,
+                            defaultKind: .providerFailure,
+                            redactor: context.redactor
+                        )
+                    )
                 }
 
             case .providerBacked(let request, let ref):
                 if let error = errorByRef[ref] {
-                    issues.append(Self.makeGenericIssue(from: error, for: request, defaultKind: .providerFailure))
+                    issues.append(
+                        Self.makeGenericIssue(
+                            from: error,
+                            for: request,
+                            defaultKind: .providerFailure,
+                            redactor: context.redactor
+                        )
+                    )
                     continue
                 }
 
@@ -1024,7 +1236,7 @@ public struct SecretResolver: Sendable {
                     let error = SecretResolutionError.unresolvedReference(
                         referenceRedacted: ref.redactedDescription
                     )
-                    issues.append(Self.makeIssue(from: error, for: request))
+                    issues.append(Self.makeIssue(from: error, for: request, redactor: context.redactor))
                     continue
                 }
 
@@ -1060,7 +1272,14 @@ public struct SecretResolver: Sendable {
                         )
                     )
                 } catch {
-                    issues.append(Self.makeGenericIssue(from: error, for: request, defaultKind: .invalidValue))
+                    issues.append(
+                        Self.makeGenericIssue(
+                            from: error,
+                            for: request,
+                            defaultKind: .invalidValue,
+                            redactor: context.redactor
+                        )
+                    )
                 }
             }
         }
@@ -1068,7 +1287,13 @@ public struct SecretResolver: Sendable {
         return SecretBatchResolutionResult(resolved: resolvedOutputs, issues: issues)
     }
 
-    /// Convenience helper for resolving a single `SecretResolutionRequest`, throwing `SettingsValidationError` on failure.
+    /// Resolves a single ``SecretResolutionRequest``, throwing ``SettingsValidationError`` on failure.
+    ///
+    /// - Parameters:
+    ///   - request: Secret resolution request to resolve.
+    ///   - context: Execution context providing providers, optional cache, and ``DiagnosticRedactor``.
+    /// - Returns: Resolved ``ResolvedSecret`` payload.
+    /// - Throws: ``SettingsValidationError`` if resolution, safety checks, or transforms fail.
     public func resolve(
         _ request: SecretResolutionRequest,
         context: SettingsContext
@@ -1119,29 +1344,31 @@ public struct SecretResolver: Sendable {
 
     private static func makeIssue(
         from error: SecretResolutionError,
-        for request: SecretResolutionRequest
+        for request: SecretResolutionRequest,
+        redactor: DiagnosticRedactor
     ) -> ValidationIssue {
         ValidationIssue(
             keyPath: request.keyPath,
             kind: error.issueKind,
-            message: contextScrubSafeMessage(error.description),
+            message: redactor.scrub(error.description),
             origin: request.node.origin,
             expectedType: request.expectedType,
             envVariableHint: request.envVariableHint,
-            remediation: error.remediation
+            remediation: error.remediation.map { redactor.scrub($0) }
         )
     }
 
     private static func makeGenericIssue(
         from error: any Error,
         for request: SecretResolutionRequest,
-        defaultKind: ValidationIssueKind
+        defaultKind: ValidationIssueKind,
+        redactor: DiagnosticRedactor
     ) -> ValidationIssue {
         if let secretError = error as? SecretResolutionError {
-            return makeIssue(from: secretError, for: request)
+            return makeIssue(from: secretError, for: request, redactor: redactor)
         }
         if let refError = error as? SecretReferenceError {
-            return makeIssue(from: .invalidReference(refError), for: request)
+            return makeIssue(from: .invalidReference(refError), for: request, redactor: redactor)
         }
         if let subprocessError = error as? SubprocessSecurityError {
             let kind: ValidationIssueKind
@@ -1160,11 +1387,11 @@ public struct SecretResolver: Sendable {
             return ValidationIssue(
                 keyPath: request.keyPath,
                 kind: kind,
-                message: subprocessError.description,
+                message: redactor.scrub(subprocessError.description),
                 origin: request.node.origin,
                 expectedType: request.expectedType,
                 envVariableHint: request.envVariableHint,
-                remediation: remediation
+                remediation: remediation.map { redactor.scrub($0) }
             )
         }
         if let issue = error as? ValidationIssue {
@@ -1173,14 +1400,10 @@ public struct SecretResolver: Sendable {
         return ValidationIssue(
             keyPath: request.keyPath,
             kind: defaultKind,
-            message: String(describing: error),
+            message: redactor.scrub(String(describing: error)),
             origin: request.node.origin,
             expectedType: request.expectedType,
             envVariableHint: request.envVariableHint
         )
-    }
-
-    private static func contextScrubSafeMessage(_ message: String) -> String {
-        message
     }
 }

@@ -1,22 +1,29 @@
 import Foundation
 
-/// Validation errors emitted when parsing a malformed or unsafe secret URI reference.
-public enum SecretReferenceError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
+/// Validation errors thrown when parsing a malformed or security-sensitive secret URI reference.
+public enum SecretReferenceError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
     /// Input contained an embedded NUL (`\0` or `%00`) byte.
     case containsNullByte
-    /// Non-literal secret URI contained illegal ASCII control characters (such as `\r` or `\n`).
+
+    /// Non-literal secret URI contained illegal ASCII control characters such as `\r` or `\n`.
     case containsControlCharacter(scheme: String)
+
     /// Percent-encoding inside a secret URI component was malformed.
     case invalidPercentEncoding(scheme: String, component: String)
-    /// URI segment or query value started with `-`, risking CLI option injection (Section 7.6).
+
+    /// URI segment or query value started with `-`, which is rejected to prevent CLI option injection.
     case optionInjection(scheme: String, segment: String)
-    /// URI path attempted directory traversal (`..` or `.`) where disallowed.
+
+    /// URI path attempted relative directory traversal (`.` or `..`) where disallowed.
     case pathTraversal(scheme: String, segment: String)
+
     /// URI structure did not match the expected syntax for its scheme.
     case invalidFormat(scheme: String, message: String)
+
     /// Query parameter carried an unrecognized or malformed value.
     case invalidQueryParameter(scheme: String, name: String, value: String)
 
+    /// Human-readable description of the URI syntax or security violation.
     public var description: String {
         switch self {
         case .containsNullByte:
@@ -36,31 +43,60 @@ public enum SecretReferenceError: Error, Sendable, Equatable, CustomStringConver
         }
     }
 
+    /// Localized error description matching ``description`` for CLI error reporters.
     public var errorDescription: String? {
         description
     }
 }
 
-/// Decoded query key-value pair attached to a secret URI.
-public struct SecretQueryItem: Sendable, Equatable, Hashable {
+/// A decoded query parameter attached to a secret URI reference.
+public struct SecretQueryItem: Sendable, Equatable, Hashable, Codable {
+    /// Decoded query parameter name.
     public let name: String
+
+    /// Decoded query parameter value, or `nil` when supplied without `=`.
     public let value: String?
 
+    /// Creates a decoded query parameter item.
+    ///
+    /// - Parameters:
+    ///   - name: Parameter identifier.
+    ///   - value: Optional decoded parameter value.
     public init(name: String, value: String?) {
         self.name = name
         self.value = value
     }
 }
 
-/// Structured 1Password secret reference (`op://<vault>/<item>/[section/]<field>[?account=...]`).
+/// A parsed 1Password secret reference (`op://<vault>/<item>/[section/]<field>[?account=...]`).
 public struct OnePasswordSecretReference: Sendable, Equatable, Hashable {
+    /// Vault name or UUID.
     public let vault: String
+
+    /// Item title or UUID.
     public let item: String
+
+    /// Optional section label within the item.
     public let section: String?
+
+    /// Field label or identifier.
     public let field: String
+
+    /// Optional 1Password account shorthand or URL extracted from `?account=...`.
     public let accountHint: String?
+
+    /// Ordered query items attached to the `op://` URI.
     public let queryItems: [SecretQueryItem]
 
+    /// Creates a structured 1Password secret reference.
+    ///
+    /// - Parameters:
+    ///   - vault: Vault name or UUID.
+    ///   - item: Item title or UUID.
+    ///   - section: Optional section label.
+    ///   - field: Field label or identifier.
+    ///   - accountHint: Optional account selector for multi-account CLI batching.
+    ///   - queryItems: Additional decoded query items.
     public init(
         vault: String,
         item: String,
@@ -77,7 +113,7 @@ public struct OnePasswordSecretReference: Sendable, Equatable, Hashable {
         self.queryItems = queryItems
     }
 
-    /// Dictionary view of query parameters (last value wins if repeated).
+    /// Dictionary view of ``queryItems`` where the last occurrence of a key wins.
     public var query: [String: String] {
         var result: [String: String] = [:]
         for item in queryItems {
@@ -86,7 +122,8 @@ public struct OnePasswordSecretReference: Sendable, Equatable, Hashable {
         return result
     }
 
-    /// Canonical `op://` URI suitable for `op read` / `op inject` (with `account` stripped so it can be passed via `--account`).
+    /// Canonical `op://` URI suitable for `op read` or `op inject`, stripping the `account` query item
+    /// so it can be forwarded via `--account`.
     public var opReadURI: String {
         var path = "op://\(Self.encodeSegment(vault))/\(Self.encodeSegment(item))/"
         if let section {
@@ -128,14 +165,31 @@ public struct OnePasswordSecretReference: Sendable, Equatable, Hashable {
     }
 }
 
-/// Structured Apple Keychain secret reference (`keychain://<service>/<account>[?accessGroup=...&synchronizable=...]`).
+/// A parsed Apple Keychain secret reference (`keychain://<service>/<account>[?accessGroup=...&synchronizable=...]`).
 public struct KeychainSecretReference: Sendable, Equatable, Hashable {
+    /// Keychain generic-password service name (`kSecAttrService`).
     public let service: String
+
+    /// Keychain generic-password account name (`kSecAttrAccount`).
     public let account: String
+
+    /// Optional Keychain access group (`kSecAttrAccessGroup`).
     public let accessGroup: String?
+
+    /// Optional iCloud Keychain synchronization flag (`kSecAttrSynchronizable`).
     public let synchronizable: Bool?
+
+    /// Ordered query items attached to the `keychain://` URI.
     public let queryItems: [SecretQueryItem]
 
+    /// Creates a structured Apple Keychain secret reference.
+    ///
+    /// - Parameters:
+    ///   - service: Keychain service identifier (for example, `"com.example.asc"`).
+    ///   - account: Keychain account identifier.
+    ///   - accessGroup: Optional shared Keychain access group.
+    ///   - synchronizable: Optional iCloud Keychain synchronization filter.
+    ///   - queryItems: Decoded query items.
     public init(
         service: String,
         account: String,
@@ -150,6 +204,7 @@ public struct KeychainSecretReference: Sendable, Equatable, Hashable {
         self.queryItems = queryItems
     }
 
+    /// Dictionary view of ``queryItems`` where the last occurrence of a key wins.
     public var query: [String: String] {
         var result: [String: String] = [:]
         for item in queryItems {
@@ -159,18 +214,30 @@ public struct KeychainSecretReference: Sendable, Equatable, Hashable {
     }
 }
 
-/// Structured Bitwarden Secrets Manager reference (`bws://<secret-uuid>[?account=...]`).
+/// A parsed Bitwarden Secrets Manager reference (`bws://<secret-uuid>[?account=...]`).
 public struct BitwardenSecretsManagerReference: Sendable, Equatable, Hashable {
+    /// Machine-account secret UUID in Bitwarden Secrets Manager.
     public let secretID: String
+
+    /// Optional account/profile hint extracted from `?account=...`.
     public let accountHint: String?
+
+    /// Ordered query items attached to the `bws://` URI.
     public let queryItems: [SecretQueryItem]
 
+    /// Creates a structured Bitwarden Secrets Manager reference.
+    ///
+    /// - Parameters:
+    ///   - secretID: Bitwarden Secrets Manager secret identifier.
+    ///   - accountHint: Optional account hint for batch partitioning.
+    ///   - queryItems: Decoded query items.
     public init(secretID: String, accountHint: String? = nil, queryItems: [SecretQueryItem] = []) {
         self.secretID = secretID
         self.accountHint = accountHint
         self.queryItems = queryItems
     }
 
+    /// Dictionary view of ``queryItems`` where the last occurrence of a key wins.
     public var query: [String: String] {
         var result: [String: String] = [:]
         for item in queryItems {
@@ -180,13 +247,27 @@ public struct BitwardenSecretsManagerReference: Sendable, Equatable, Hashable {
     }
 }
 
-/// Structured Bitwarden Vault CLI reference (`bw://<item-id>/<field>[?account=...]`).
+/// A parsed Bitwarden Vault CLI reference (`bw://<item-id>/<field>[?account=...]`).
 public struct BitwardenVaultReference: Sendable, Equatable, Hashable {
+    /// Vault item UUID or unique name.
     public let itemID: String
+
+    /// Target field (`"password"`, `"username"`, `"notes"`, or custom field name).
     public let field: String
+
+    /// Optional account/profile hint extracted from `?account=...`.
     public let accountHint: String?
+
+    /// Ordered query items attached to the `bw://` URI.
     public let queryItems: [SecretQueryItem]
 
+    /// Creates a structured Bitwarden Vault reference.
+    ///
+    /// - Parameters:
+    ///   - itemID: Bitwarden vault item UUID or name.
+    ///   - field: Field selector within the vault item.
+    ///   - accountHint: Optional account hint for batch partitioning.
+    ///   - queryItems: Decoded query items.
     public init(
         itemID: String,
         field: String,
@@ -199,6 +280,7 @@ public struct BitwardenVaultReference: Sendable, Equatable, Hashable {
         self.queryItems = queryItems
     }
 
+    /// Dictionary view of ``queryItems`` where the last occurrence of a key wins.
     public var query: [String: String] {
         var result: [String: String] = [:]
         for item in queryItems {
@@ -208,13 +290,27 @@ public struct BitwardenVaultReference: Sendable, Equatable, Hashable {
     }
 }
 
-/// Structured Unix `pass` password-store reference (`pass://<entry-path>[#fragment]`).
+/// A parsed Unix `pass` password-store reference (`pass://<entry-path>[#fragment]`).
 public struct PassSecretReference: Sendable, Equatable, Hashable {
+    /// Slash-delimited entry path inside `~/.password-store`.
     public let entryPath: String
+
+    /// Optional fragment selector (such as `"password"`, `"line:2"`, or a `key: value` metadata key).
     public let fragment: String?
+
+    /// Optional store/account hint extracted from `?account=...` or `?store=...`.
     public let accountHint: String?
+
+    /// Ordered query items attached to the `pass://` URI.
     public let queryItems: [SecretQueryItem]
 
+    /// Creates a structured Unix `pass` reference.
+    ///
+    /// - Parameters:
+    ///   - entryPath: Relative entry path inside the password store.
+    ///   - fragment: Optional `#fragment` line or field selector.
+    ///   - accountHint: Optional password-store selector for batch partitioning.
+    ///   - queryItems: Decoded query items.
     public init(
         entryPath: String,
         fragment: String? = nil,
@@ -227,6 +323,7 @@ public struct PassSecretReference: Sendable, Equatable, Hashable {
         self.queryItems = queryItems
     }
 
+    /// Dictionary view of ``queryItems`` where the last occurrence of a key wins.
     public var query: [String: String] {
         var result: [String: String] = [:]
         for item in queryItems {
@@ -236,13 +333,27 @@ public struct PassSecretReference: Sendable, Equatable, Hashable {
     }
 }
 
-/// Structured Mozilla SOPS encrypted-file reference (`sops://<file-path>#<json-pointer>`).
+/// A parsed Mozilla SOPS encrypted-file reference (`sops://<file-path>#<json-pointer>`).
 public struct SopsSecretReference: Sendable, Equatable, Hashable {
+    /// Path to the SOPS-encrypted file.
     public let filePath: String
+
+    /// Optional JSON Pointer or key path fragment after `#`.
     public let jsonPointer: String?
+
+    /// Optional account/profile hint extracted from `?account=...`.
     public let accountHint: String?
+
+    /// Ordered query items attached to the `sops://` URI.
     public let queryItems: [SecretQueryItem]
 
+    /// Creates a structured SOPS secret reference.
+    ///
+    /// - Parameters:
+    ///   - filePath: Path to the encrypted SOPS document.
+    ///   - jsonPointer: Optional JSON Pointer fragment.
+    ///   - accountHint: Optional account hint for batch partitioning.
+    ///   - queryItems: Decoded query items.
     public init(
         filePath: String,
         jsonPointer: String? = nil,
@@ -255,6 +366,7 @@ public struct SopsSecretReference: Sendable, Equatable, Hashable {
         self.queryItems = queryItems
     }
 
+    /// Dictionary view of ``queryItems`` where the last occurrence of a key wins.
     public var query: [String: String] {
         var result: [String: String] = [:]
         for item in queryItems {
@@ -264,39 +376,72 @@ public struct SopsSecretReference: Sendable, Equatable, Hashable {
     }
 }
 
-/// Structured local file secret reference (`file:///abs/path` or `@~/path`, `@/abs/path`, `@./rel/path`).
+/// A parsed local-file secret reference (`file:///abs/path` or `@~/path`, `@/abs/path`, `@./rel/path`).
 public struct FileSecretReference: Sendable, Equatable, Hashable {
-    public enum Syntax: String, Sendable, Equatable, Hashable {
+    /// Lexical syntax used to write the file secret reference.
+    public enum Syntax: String, Sendable, Equatable, Hashable, Codable {
+        /// Standard `file:///path` URI syntax.
         case fileURI
+
+        /// Shorthand `@~/path`, `@/path`, or `@./path` syntax.
         case atPath
     }
 
+    /// Decoded filesystem path (prior to tilde or working-directory expansion).
     public let path: String
+
+    /// Original notation used to specify the file reference.
     public let syntax: Syntax
 
+    /// Creates a local-file secret reference.
+    ///
+    /// - Parameters:
+    ///   - path: Decoded file path.
+    ///   - syntax: Notation style (`.fileURI` or `.atPath`).
     public init(path: String, syntax: Syntax) {
         self.path = path
         self.syntax = syntax
     }
 }
 
-/// Structured indirect environment variable reference (`env://<VAR_NAME>`).
+/// A parsed indirect environment-variable secret reference (`env://<VAR_NAME>`).
 public struct EnvSecretReference: Sendable, Equatable, Hashable {
+    /// Validated POSIX environment variable identifier (`[A-Za-z_][A-Za-z0-9_]*`).
     public let variableName: String
 
+    /// Creates an indirect environment-variable secret reference.
+    ///
+    /// - Parameter variableName: Environment variable identifier.
     public init(variableName: String) {
         self.variableName = variableName
     }
 }
 
-/// Extensible URI reference routed to a custom `SecretProvider` registered in `SettingsContext`.
+/// A parsed extensible URI reference routed to a custom ``SecretProvider`` registered in ``SettingsContext``.
 public struct CustomSecretReference: Sendable, Equatable, Hashable {
+    /// Lowercase custom URI scheme name (for example, `"vault"` or `"aws-sm"`).
     public let scheme: String
+
+    /// Decoded path portion following `<scheme>://`.
     public let path: String
+
+    /// Optional account/profile hint extracted from `?account=...`.
     public let accountHint: String?
+
+    /// Ordered query items attached to the custom URI.
     public let queryItems: [SecretQueryItem]
+
+    /// Optional decoded `#fragment` component.
     public let fragment: String?
 
+    /// Creates a custom-scheme secret reference.
+    ///
+    /// - Parameters:
+    ///   - scheme: Lowercase URI scheme identifier.
+    ///   - path: Decoded URI path.
+    ///   - accountHint: Optional account hint for batch partitioning.
+    ///   - queryItems: Decoded query items.
+    ///   - fragment: Optional decoded fragment.
     public init(
         scheme: String,
         path: String,
@@ -310,19 +455,58 @@ public struct CustomSecretReference: Sendable, Equatable, Hashable {
         self.queryItems = queryItems
         self.fragment = fragment
     }
+
+    /// Dictionary view of ``queryItems`` where the last occurrence of a key wins.
+    public var query: [String: String] {
+        var result: [String: String] = [:]
+        for item in queryItems {
+            result[item.name] = item.value ?? ""
+        }
+        return result
+    }
 }
 
-/// Parsed representation of a `@SecretSetting` value prior to secret resolution.
+/// Parsed representation of a raw secret configuration string prior to provider resolution.
+///
+/// `SecretReference` distinguishes structured vault URIs (`op://`, `keychain://`, `bws://`, `bw://`,
+/// `pass://`, `sops://`, `file://`, `@path`, `env://`, and custom provider schemes) from inline
+/// `.literal` values, while rejecting embedded NUL bytes and leading-hyphen option-injection segments
+/// before any external CLI binary is invoked.
+///
+/// ```swift
+/// let ref = try SecretReference.parse("op://Engineering/AppStoreConnect/private_key?account=acme")
+/// // ref.scheme == "op"
+/// // ref.accountHint == "acme"
+/// ```
 public enum SecretReference: Sendable, Equatable, Hashable, CustomStringConvertible {
+    /// A 1Password `op://` reference.
     case onePassword(OnePasswordSecretReference)
+
+    /// An Apple Keychain `keychain://` reference.
     case keychain(KeychainSecretReference)
+
+    /// A Bitwarden Secrets Manager `bws://` reference.
     case bitwardenSecretsManager(BitwardenSecretsManagerReference)
+
+    /// A Bitwarden Vault `bw://` reference.
     case bitwardenVault(BitwardenVaultReference)
+
+    /// A Unix `pass://` password-store reference.
     case pass(PassSecretReference)
+
+    /// A Mozilla SOPS `sops://` encrypted-file reference.
     case sops(SopsSecretReference)
+
+    /// A local file `file://` or `@path` reference.
     case file(FileSecretReference)
+
+    /// An indirect `env://` environment variable reference.
     case env(EnvSecretReference)
+
+    /// A custom URI reference handled by a user-supplied ``SecretProvider``.
     case custom(CustomSecretReference)
+
+    /// An inline literal secret string (redacted as `"<literal>"` in provenance and descriptions).
     case literal(String)
 
     /// Provider scheme identifier (`"op"`, `"keychain"`, `"bws"`, `"bw"`, `"pass"`, `"sops"`, `"file"`, `"env"`, custom scheme, or `"literal"`).
@@ -341,7 +525,7 @@ public enum SecretReference: Sendable, Equatable, Hashable, CustomStringConverti
         }
     }
 
-    /// Optional account/profile selector used to partition batched provider invocations.
+    /// Optional account or profile selector used by ``SecretResolver`` to group batched provider calls.
     public var accountHint: String? {
         switch self {
         case .onePassword(let ref): return ref.accountHint
@@ -357,13 +541,13 @@ public enum SecretReference: Sendable, Equatable, Hashable, CustomStringConverti
         }
     }
 
-    /// Whether this reference represents an inline literal secret rather than a provider URI.
+    /// Indicates whether this value is an inline `.literal` secret rather than a provider URI.
     public var isLiteral: Bool {
         if case .literal = self { return true }
         return false
     }
 
-    /// Safe provenance string that retains URI path metadata while redacting inline `.literal` values.
+    /// Redacted provenance label preserving non-sensitive URI paths while masking `.literal` payloads as `"<literal>"`.
     public var redactedDescription: String {
         switch self {
         case .onePassword(let ref):
@@ -406,11 +590,17 @@ public enum SecretReference: Sendable, Equatable, Hashable, CustomStringConverti
         }
     }
 
+    /// Safe textual representation matching ``redactedDescription``.
     public var description: String {
         redactedDescription
     }
 
-    /// Convenience initializer delegating to `SecretReference.parse(_:additionalSchemes:)`.
+    /// Parses a raw secret configuration string into a ``SecretReference``.
+    ///
+    /// - Parameters:
+    ///   - raw: Raw configuration string to parse.
+    ///   - additionalSchemes: Custom URI schemes registered via ``SettingsContext/secretProviders``.
+    /// - Throws: ``SecretReferenceError`` when the URI is malformed or contains unsafe characters.
     public init(parsing raw: String, additionalSchemes: Set<String> = []) throws {
         self = try Self.parse(raw, additionalSchemes: additionalSchemes)
     }
@@ -421,8 +611,14 @@ public enum SecretReference: Sendable, Equatable, Hashable, CustomStringConverti
         "op", "keychain", "bws", "bw", "pass", "sops", "file", "env"
     ]
 
-    /// Parses a raw configuration string into a `SecretReference`, enforcing strict validation
-    /// against embedded NUL bytes and CLI option-injection payloads (`-` prefixes).
+    /// Parses a raw configuration string into a ``SecretReference``, enforcing strict validation
+    /// against embedded NUL bytes, control characters, path traversal, and leading-`-` option injection.
+    ///
+    /// - Parameters:
+    ///   - raw: Raw configuration string to classify and validate.
+    ///   - additionalSchemes: Custom URI schemes supported by registered ``SecretProvider`` instances.
+    /// - Returns: A validated ``SecretReference``.
+    /// - Throws: ``SecretReferenceError`` when a recognized URI scheme has invalid or unsafe syntax.
     public static func parse(
         _ raw: String,
         additionalSchemes: Set<String> = []

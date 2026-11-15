@@ -1,18 +1,40 @@
 import Foundation
 
-/// Reads configuration values from process environment variables (`context.environment`),
-/// supporting `envPrefix`, `envNestedDelimiter`, `envNestedMaxSplit`, `caseSensitive`,
-/// `envIgnoreEmpty`, `envNullStrings`, and direct `.env(...)` alias lookups.
+/// Loads configuration values from process environment variables.
+///
+/// `EnvironmentSource` strips ``SettingsConfiguration/envPrefix``, splits nested segments on
+/// ``SettingsConfiguration/envNestedDelimiter`` (bounded by ``SettingsConfiguration/envNestedMaxSplit``),
+/// converts configured ``SettingsConfiguration/envNullStrings`` to ``RawValue/null``, and skips empty
+/// strings when ``SettingsConfiguration/envIgnoreEmpty`` is `true`. All variables are also recorded
+/// in ``RawConfigTree/directEnvironment`` so explicit ``SettingAlias/env(_:)`` bindings resolve even
+/// when they omit `envPrefix`.
+///
+/// ```swift
+/// let source = EnvironmentSource(environment: [
+///     "APP_DATABASE__HOST": "db.internal",
+///     "APP_DATABASE__PORT": "5432",
+/// ])
+/// ```
 public struct EnvironmentSource: SettingsSource, Sendable {
-    /// Optional explicit environment dictionary overriding `context.environment`.
+    /// Optional environment dictionary overriding ``SettingsContext/environment``.
     public let environment: [String: String]?
 
+    /// Human-readable name identifying this source in diagnostics (`"EnvironmentSource"`).
     public var sourceName: String { "EnvironmentSource" }
 
+    /// Creates an environment variable configuration source.
+    ///
+    /// - Parameter environment: Optional explicit dictionary overriding ``SettingsContext/environment``.
     public init(environment: [String: String]? = nil) {
         self.environment = environment
     }
 
+    /// Reads environment variables and maps matching keys into a ``RawConfigTree``.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration controlling prefix stripping, nested delimiters, and null handling.
+    ///   - context: Execution context providing the fallback environment dictionary.
+    /// - Returns: A ``RawConfigTree`` tagged with ``SettingOrigin/environment(variable:)`` provenance.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext

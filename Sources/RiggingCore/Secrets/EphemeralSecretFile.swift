@@ -7,14 +7,24 @@ import Glibc
 import Musl
 #endif
 
-/// Errors thrown when materializing a temporary secret file on disk.
-public enum EphemeralSecretFileError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
+/// Errors thrown when materializing or cleaning up a temporary secret file on disk.
+public enum EphemeralSecretFileError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
+    /// Prefix or suffix contained a path separator (`/`), NUL byte, or `..` traversal sequence.
     case invalidFileNameAffix(String)
+
+    /// Failed to create the private mode-`0700` temporary directory via `mkdtemp`.
     case directoryCreationFailed(errno: Int32)
+
+    /// Failed to atomically create the secret file with `O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW`.
     case fileOpenFailed(errno: Int32)
+
+    /// Failed to write the secret bytes to the file descriptor.
     case fileWriteFailed(errno: Int32)
+
+    /// Failed to flush the secret file descriptor to storage via `fsync`.
     case fileSyncFailed(errno: Int32)
 
+    /// Human-readable diagnostic describing the POSIX failure without exposing secret contents.
     public var description: String {
         switch self {
         case .invalidFileNameAffix(let affix):
@@ -30,14 +40,33 @@ public enum EphemeralSecretFileError: Error, Sendable, Equatable, CustomStringCo
         }
     }
 
+    /// Localized error description matching ``description`` for CLI error reporters.
     public var errorDescription: String? {
         description
     }
 }
 
 extension Secret where Value == String {
-    /// Materializes the secret string into a hardened, mode-`0600` file inside a private `0700`
-    /// temporary directory for the duration of `body`, then overwrites with zeros and unlinks on exit.
+    /// Materializes the UTF-8 bytes of the secret string into an atomic mode-`0600` file inside a
+    /// private mode-`0700` temporary directory for the duration of `body`, then overwrites with zeros
+    /// and unlinks both file and directory on exit.
+    ///
+    /// Use this API only when bridging to legacy tools (such as `ssh -i` or `openssl`) that require
+    /// a filesystem path instead of in-memory bytes or standard input pipes.
+    ///
+    /// ```swift
+    /// try await settings.signingKey.withEphemeralFile(suffix: ".p8") { keyURL in
+    ///     try await signArchive(usingKeyAt: keyURL)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - prefix: File name prefix (must not contain `/`, `..`, or NUL bytes).
+    ///   - suffix: File name suffix or extension such as `".pem"` or `".p8"`.
+    ///   - permissions: POSIX mode applied to the created file (defaults to `0o600`).
+    ///   - body: Scoped async closure receiving the temporary file `URL`.
+    /// - Returns: Value returned by `body`.
+    /// - Throws: ``EphemeralSecretFileError`` if file creation fails, or any error thrown by `body`.
     public func withEphemeralFile<R>(
         prefix: String = "secret-",
         suffix: String = "",
@@ -57,8 +86,16 @@ extension Secret where Value == String {
 }
 
 extension Secret where Value == Data {
-    /// Materializes the secret data into a hardened, mode-`0600` file inside a private `0700`
+    /// Materializes the secret `Data` into an atomic mode-`0600` file inside a private mode-`0700`
     /// temporary directory for the duration of `body`, then overwrites with zeros and unlinks on exit.
+    ///
+    /// - Parameters:
+    ///   - prefix: File name prefix (must not contain `/`, `..`, or NUL bytes).
+    ///   - suffix: File name suffix or extension such as `".p12"` or `".der"`.
+    ///   - permissions: POSIX mode applied to the created file (defaults to `0o600`).
+    ///   - body: Scoped async closure receiving the temporary file `URL`.
+    /// - Returns: Value returned by `body`.
+    /// - Throws: ``EphemeralSecretFileError`` if file creation fails, or any error thrown by `body`.
     public func withEphemeralFile<R>(
         prefix: String = "secret-",
         suffix: String = "",
@@ -78,8 +115,16 @@ extension Secret where Value == Data {
 }
 
 extension Secret where Value == [UInt8] {
-    /// Materializes the secret byte array into a hardened, mode-`0600` file inside a private `0700`
+    /// Materializes the secret byte array into an atomic mode-`0600` file inside a private mode-`0700`
     /// temporary directory for the duration of `body`, then overwrites with zeros and unlinks on exit.
+    ///
+    /// - Parameters:
+    ///   - prefix: File name prefix (must not contain `/`, `..`, or NUL bytes).
+    ///   - suffix: File name suffix or extension.
+    ///   - permissions: POSIX mode applied to the created file (defaults to `0o600`).
+    ///   - body: Scoped async closure receiving the temporary file `URL`.
+    /// - Returns: Value returned by `body`.
+    /// - Throws: ``EphemeralSecretFileError`` if file creation fails, or any error thrown by `body`.
     public func withEphemeralFile<R>(
         prefix: String = "secret-",
         suffix: String = "",
@@ -263,12 +308,10 @@ private func scrubAndRemoveEphemeralArtifacts(
         if let dirStream = opendir(dirPath) {
             defer { closedir(dirStream) }
             while let entry = readdir(dirStream) {
-                let name = withUnsafePointer(to: entry.pointee.d_name) { ptr in
-                    ptr.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX)) { cStr in
-                        String(cString: cStr)
-                    }
+                let name = withUnsafeBytes(of: entry.pointee.d_name) { rawBuf in
+                    String(decoding: rawBuf.prefix(while: { $0 != 0 }), as: UTF8.self)
                 }
-                if name != "." && name != ".." {
+                if !name.isEmpty && name != "." && name != ".." {
                     _ = unlink("\(dirPath)/\(name)")
                 }
             }

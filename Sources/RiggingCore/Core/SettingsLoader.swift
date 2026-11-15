@@ -1,23 +1,46 @@
 import Foundation
 
-/// Protocol implemented by `@NestedSettings` value types so nested groups participate in
-/// schema generation, single-pass batched secret resolution, and exhaustive validation.
+/// Protocol implemented by nested configuration value types (typically synthesized via `@NestedSettings`)
+/// so nested groups participate in schema generation, single-pass batched secret resolution, and exhaustive validation.
 public protocol RiggedNestedSettings: Sendable {
+    /// Returns static field descriptors for this nested group prefixed under `prefix`.
+    ///
+    /// - Parameters:
+    ///   - prefix: Parent setting key path segments leading to this nested group.
+    ///   - configuration: Root ``SettingsConfiguration`` governing environment variable derivation.
+    /// - Returns: Field descriptors for all child fields and nested groups.
     static func fieldDescriptors(
         prefix: [String],
         configuration: SettingsConfiguration
     ) -> [SettingFieldDescriptor]
 
+    /// Enqueues any secret or secret-reference child fields under `prefix` into `loader` during Phase 1 batching.
+    ///
+    /// - Parameters:
+    ///   - loader: Active ``SettingsLoader`` collecting secret resolution requests.
+    ///   - prefix: Parent setting key path segments leading to this nested group.
     static func enqueueSecrets(
         into loader: inout SettingsLoader,
         prefix: [String]
     )
 
+    /// Decodes and validates all child fields under `prefix` from `loader` during Phase 2 decoding.
+    ///
+    /// - Parameters:
+    ///   - loader: Active ``SettingsLoader`` holding the merged tree and resolved secrets.
+    ///   - prefix: Parent setting key path segments leading to this nested group.
+    /// - Returns: A decoded instance of `Self`, or `nil` if one or more child fields failed validation.
     static func decodeNested(
         from loader: inout SettingsLoader,
         prefix: [String]
     ) -> Self?
 
+    /// Performs group-level cross-field validation on a decoded nested settings instance.
+    ///
+    /// - Parameters:
+    ///   - settings: The decoded nested settings value.
+    ///   - prefix: Parent setting key path segments leading to this nested group.
+    /// - Returns: Any ``ValidationIssue`` entries discovered across child fields.
     static func validate(
         _ settings: Self,
         prefix: [String]
@@ -25,6 +48,7 @@ public protocol RiggedNestedSettings: Sendable {
 }
 
 extension RiggedNestedSettings {
+    /// Default implementation returning no cross-field validation issues for the nested group.
     public static func validate(
         _ settings: Self,
         prefix: [String]
@@ -33,16 +57,34 @@ extension RiggedNestedSettings {
     }
 }
 
-/// Runtime coordinator orchestrating source cascade merging, `extraKeys` inspection,
-/// two-phase batched `SecretResolver` execution, typed `SettingValueDecodable` coercion,
-/// field/model validation, and `ProvenanceReport` construction.
+/// Runtime coordinator orchestrating source cascade merging, unknown-key inspection,
+/// two-phase batched ``SecretResolver`` execution, typed ``SettingValueDecodable`` coercion,
+/// exhaustive field/model validation, and ``ProvenanceReport`` construction.
+///
+/// `@Settings` macro expansions drive `SettingsLoader` in six deterministic steps:
+/// 1. ``prepare(for:context:overrides:)`` loads and merges every ``SettingsSource`` and checks ``SettingsConfiguration/extraKeys``.
+/// 2. ``enqueueSecret(keyPath:aliases:transforms:allowLiteralInProjectConfig:expectedType:isOptional:hasDefault:)`` collects all secret fields across root and nested groups.
+/// 3. ``resolveEnqueuedSecrets(resolver:)`` resolves all queued secrets concurrently in a single deduplicated batch per provider.
+/// 4. `decodeRequired` / `decodeDefaulted` / `decodeOptional` (and their `Secret` / `Nested` counterparts) coerce and validate every field without failing early on the first error.
+/// 5. ``finalize(_:)`` runs cross-field ``RiggedSettings/validate(_:)`` checks and throws ``SettingsValidationError`` if any issues were accumulated.
+/// 6. ``buildProvenanceReport()`` produces the immutable ``ProvenanceReport`` attached to the loaded model.
 public struct SettingsLoader: Sendable {
+    /// Declarative configuration governing source parsing, environment prefixes, and unknown-key policy.
     public let configuration: SettingsConfiguration
+
+    /// Effective execution context (including any prepended explicit overrides) used during loading.
     public let context: SettingsContext
+
+    /// Merged configuration tree combining all ``SettingsSource`` layers in precedence order.
     public let mergedTree: RawConfigTree
 
+    /// Exhaustive list of fatal ``ValidationIssue`` entries accumulated across sources, secrets, fields, and cross-field checks.
     public private(set) var issues: [ValidationIssue] = []
+
+    /// Non-fatal ``ValidationIssue`` warnings accumulated during loading (such as unknown keys under ``ExtraKeysPolicy/warn``).
     public private(set) var warnings: [ValidationIssue] = []
+
+    /// Ordered ``ProvenanceEntry`` records collected for successfully decoded fields.
     public private(set) var provenanceEntries: [ProvenanceEntry] = []
 
     private var pendingSecretRequests: [SecretResolutionRequest] = []
@@ -50,6 +92,14 @@ public struct SettingsLoader: Sendable {
     private var resolvedSecretsByKeyPath: [[String]: ResolvedSecret] = [:]
     private let decodingContext: ValueDecodingContext
 
+    /// Creates a settings loader over an already merged configuration tree.
+    ///
+    /// - Parameters:
+    ///   - configuration: Schema-level configuration options.
+    ///   - context: Runtime execution context and dependencies.
+    ///   - mergedTree: Merged ``RawConfigTree`` from configuration sources.
+    ///   - initialIssues: Pre-existing validation errors recorded while loading sources. Defaults to `[]`.
+    ///   - initialWarnings: Pre-existing validation warnings recorded while loading sources. Defaults to `[]`.
     public init(
         configuration: SettingsConfiguration,
         context: SettingsContext,
@@ -67,8 +117,15 @@ public struct SettingsLoader: Sendable {
 
     // MARK: - Step 1: Source Cascade & Extra Keys Inspection
 
-    /// Loads and merges all configured `SettingsSource` layers for `Settings`, then enforces
-    /// `configuration.extraKeys` against `Settings.fieldDescriptors`.
+    /// Loads and merges all configured ``SettingsSource`` layers for `settingsType`, then enforces
+    /// ``SettingsConfiguration/extraKeys`` against ``RiggedSettings/fieldDescriptors``.
+    ///
+    /// - Parameters:
+    ///   - settingsType: The ``RiggedSettings`` model type being loaded.
+    ///   - context: Runtime environment, filesystem, and secret providers. Defaults to `SettingsContext()`.
+    ///   - overrides: Explicit CLI or programmatic overrides prepended ahead of `context.cliOverrides`. Defaults to `[]`.
+    /// - Returns: A prepared ``SettingsLoader`` ready for secret enqueuing and field decoding.
+    /// - Throws: Any unrecoverable error thrown by a ``SettingsSource`` (for example, malformed JSON or `.env` syntax).
     public static func prepare<Settings: RiggedSettings>(
         for settingsType: Settings.Type,
         context: SettingsContext = SettingsContext(),
@@ -148,6 +205,18 @@ public struct SettingsLoader: Sendable {
     // MARK: - Step 2: Two-Phase Secret Batching
 
     /// Registers a `@SecretSetting` field for Phase 1 batched secret resolution.
+    ///
+    /// When a required secret has no candidate node (or resolves to `null`), this method records a
+    /// ``ValidationIssueKind/missingRequired`` issue immediately so all missing secrets are reported together.
+    ///
+    /// - Parameters:
+    ///   - keyPath: Canonical nested key path of the secret field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - transforms: Ordered ``SecretTransform`` steps applied to resolved secret bytes. Defaults to `[]`.
+    ///   - allowLiteralInProjectConfig: Whether plaintext literals inside project config files are allowed. Defaults to `false`.
+    ///   - expectedType: Human-readable expected type name for diagnostics. Defaults to `"Secret<String>"`.
+    ///   - isOptional: Whether the field is optional (`Secret<T>?`). Defaults to `false`.
+    ///   - hasDefault: Whether the field declares a default value. Defaults to `false`.
     public mutating func enqueueSecret(
         keyPath: [String],
         aliases: [SettingAlias] = [],
@@ -215,9 +284,19 @@ public struct SettingsLoader: Sendable {
     }
 
     /// Conditionally registers a non-secret `@Setting(resolveSecrets: true)` field for Phase 1
-    /// batched secret resolution ONLY when its winning node parses as a non-literal `SecretReference`
-    /// (e.g. `"op://..."`, `"keychain://..."`, `"file://..."`). Plain literal values are left untouched
-    /// for normal Phase 2 decoding without registering non-secret strings in `DiagnosticRedactor`.
+    /// batched secret resolution only when its winning value parses as a non-literal ``SecretReference``
+    /// (such as `"op://..."`, `"keychain://..."`, or `"file://..."`).
+    ///
+    /// Plain literal values are left untouched for normal Phase 2 decoding without registering non-secret
+    /// strings in ``DiagnosticRedactor``.
+    ///
+    /// - Parameters:
+    ///   - keyPath: Canonical nested key path of the field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - transforms: Ordered ``SecretTransform`` steps applied when resolved via a secret URI. Defaults to `[]`.
+    ///   - expectedType: Human-readable expected type name for diagnostics. Defaults to `"String"`.
+    ///   - isOptional: Whether the field is optional. Defaults to `false`.
+    ///   - hasDefault: Whether the field declares a default value. Defaults to `false`.
     public mutating func enqueuePotentialSecretReference(
         keyPath: [String],
         aliases: [SettingAlias] = [],
@@ -257,7 +336,7 @@ public struct SettingsLoader: Sendable {
                 ValidationIssue(
                     keyPath: keyPath,
                     kind: .invalidValue,
-                    message: refError.description,
+                    message: context.redactor.scrub(refError.description),
                     origin: node.origin,
                     expectedType: expectedType,
                     envVariableHint: envHint
@@ -269,7 +348,7 @@ public struct SettingsLoader: Sendable {
                 ValidationIssue(
                     keyPath: keyPath,
                     kind: .invalidValue,
-                    message: String(describing: error),
+                    message: context.redactor.scrub(String(describing: error)),
                     origin: node.origin,
                     expectedType: expectedType,
                     envVariableHint: envHint
@@ -278,7 +357,9 @@ public struct SettingsLoader: Sendable {
         }
     }
 
-    /// Executes the single deduplicated batch pass across all queued `SecretResolutionRequest` items.
+    /// Executes a single deduplicated batch pass across all enqueued ``SecretResolutionRequest`` items.
+    ///
+    /// - Parameter resolver: The ``SecretResolver`` coordinator to execute. Defaults to `SecretResolver()`.
     public mutating func resolveEnqueuedSecrets(
         resolver: SecretResolver = SecretResolver()
     ) async {
@@ -296,6 +377,16 @@ public struct SettingsLoader: Sendable {
     // MARK: - Step 3: Non-Secret Field Decoding & Validation
 
     /// Decodes and validates a required non-optional setting field.
+    ///
+    /// - Parameters:
+    ///   - type: Target ``SettingValueDecodable`` value type. Defaults to `Value.self`.
+    ///   - keyPath: Canonical nested key path of the field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - envListStrategy: Optional field-specific collection decoding strategy overriding ``SettingsConfiguration/envListStrategy``.
+    ///   - resolveSecrets: Whether URI secret references enqueued via ``enqueuePotentialSecretReference(keyPath:aliases:transforms:expectedType:isOptional:hasDefault:)`` should be consumed.
+    ///   - transform: Optional post-decoding transformation closure.
+    ///   - validators: Field-level ``SettingValidator`` rules evaluated exhaustively.
+    /// - Returns: Typed ``SettingMetadata`` when valid, or `nil` after appending issues to ``issues``.
     public mutating func decodeRequired<Value: SettingValueDecodable>(
         _ type: Value.Type = Value.self,
         keyPath: [String],
@@ -363,7 +454,18 @@ public struct SettingsLoader: Sendable {
         )
     }
 
-    /// Decodes and validates a setting field with a declared default value.
+    /// Decodes and validates a setting field that declares a compile-time default value.
+    ///
+    /// - Parameters:
+    ///   - type: Target ``SettingValueDecodable`` value type. Defaults to `Value.self`.
+    ///   - defaultValue: Lazily evaluated default value used when no source supplies the field (or when the source supplies a null token).
+    ///   - keyPath: Canonical nested key path of the field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - envListStrategy: Optional field-specific collection decoding strategy.
+    ///   - resolveSecrets: Whether URI secret references should be consumed from the Phase 1 batch.
+    ///   - transform: Optional post-decoding transformation closure.
+    ///   - validators: Field-level ``SettingValidator`` rules evaluated exhaustively (including against the default value).
+    /// - Returns: Typed ``SettingMetadata`` when valid, or `nil` after appending issues to ``issues``.
     public mutating func decodeDefaulted<Value: SettingValueDecodable>(
         _ type: Value.Type = Value.self,
         default defaultValue: @autoclosure () -> Value,
@@ -420,7 +522,18 @@ public struct SettingsLoader: Sendable {
         )
     }
 
-    /// Decodes and validates an optional setting field (`Value?`).
+    /// Decodes and validates an optional setting field (`Wrapped?`).
+    ///
+    /// - Parameters:
+    ///   - type: Wrapped ``SettingValueDecodable`` value type. Defaults to `Wrapped.self`.
+    ///   - defaultValue: Optional default value used when the key is absent from all sources. Defaults to `nil`.
+    ///   - keyPath: Canonical nested key path of the field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - envListStrategy: Optional field-specific collection decoding strategy.
+    ///   - resolveSecrets: Whether URI secret references should be consumed from the Phase 1 batch.
+    ///   - transform: Optional post-decoding transformation closure applied when non-`nil`.
+    ///   - validators: Field-level ``SettingValidator`` rules applied when non-`nil`.
+    /// - Returns: Typed ``SettingMetadata`` wrapping `Wrapped?` when valid, or `nil` after appending issues to ``issues``.
     public mutating func decodeOptional<Wrapped: SettingValueDecodable>(
         _ type: Wrapped.Type = Wrapped.self,
         default defaultValue: Wrapped? = nil,
@@ -539,7 +652,14 @@ public struct SettingsLoader: Sendable {
 
     // MARK: - Step 4: Secret Field Decoding & Validation
 
-    /// Completes Phase 2 decoding and validation for a required `@SecretSetting` field.
+    /// Completes Phase 2 typed decoding and validation for a required `@SecretSetting` field (`Secret<Value>`).
+    ///
+    /// - Parameters:
+    ///   - type: Underlying ``SettingValueDecodable`` payload type inside ``Secret``. Defaults to `Value.self`.
+    ///   - keyPath: Canonical nested key path of the secret field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - validators: Field-level ``SettingValidator`` rules lifted to ``Secret`` via ``SettingValidator/forSecret()``.
+    /// - Returns: Typed ``SettingMetadata`` wrapping ``Secret`` when valid, or `nil` if missing or invalid.
     public mutating func decodeRequiredSecret<Value: SettingValueDecodable>(
         _ type: Value.Type = Value.self,
         keyPath: [String],
@@ -558,7 +678,18 @@ public struct SettingsLoader: Sendable {
         )
     }
 
-    /// Completes Phase 2 decoding and validation for a defaulted `@SecretSetting` field.
+    /// Completes Phase 2 typed decoding and validation for a defaulted `@SecretSetting` field (`Secret<Value>`).
+    ///
+    /// Default secret payloads are registered in ``SettingsContext/redactor`` so diagnostics remain scrubbed
+    /// even when falling back to a default value.
+    ///
+    /// - Parameters:
+    ///   - type: Underlying ``SettingValueDecodable`` payload type inside ``Secret``. Defaults to `Value.self`.
+    ///   - defaultSecret: Lazily evaluated default ``Secret`` used when no source supplies the field.
+    ///   - keyPath: Canonical nested key path of the secret field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - validators: Field-level ``SettingValidator`` rules evaluated against the resolved or default secret.
+    /// - Returns: Typed ``SettingMetadata`` wrapping ``Secret`` when valid, or `nil` if resolution or validation failed.
     public mutating func decodeDefaultedSecret<Value: SettingValueDecodable>(
         _ type: Value.Type = Value.self,
         default defaultSecret: @autoclosure () -> Secret<Value>,
@@ -613,7 +744,15 @@ public struct SettingsLoader: Sendable {
         return metadata
     }
 
-    /// Completes Phase 2 decoding and validation for an optional `@SecretSetting` (`Secret<Value>?`).
+    /// Completes Phase 2 typed decoding and validation for an optional `@SecretSetting` field (`Secret<Value>?`).
+    ///
+    /// - Parameters:
+    ///   - type: Underlying ``SettingValueDecodable`` payload type inside ``Secret``. Defaults to `Value.self`.
+    ///   - defaultSecret: Optional default ``Secret`` used when the key is absent from all sources. Defaults to `nil`.
+    ///   - keyPath: Canonical nested key path of the secret field.
+    ///   - aliases: Alternate lookup aliases. Defaults to `[]`.
+    ///   - validators: Field-level ``SettingValidator`` rules applied when non-`nil`.
+    /// - Returns: Typed ``SettingMetadata`` wrapping `Secret<Value>?` when valid, or `nil` if resolution or validation failed.
     public mutating func decodeOptionalSecret<Value: SettingValueDecodable>(
         _ type: Value.Type = Value.self,
         default defaultSecret: Secret<Value>? = nil,
@@ -693,7 +832,12 @@ public struct SettingsLoader: Sendable {
 
     // MARK: - Step 5: Nested Settings Helpers
 
-    /// Decodes a nested `@NestedSettings` group at `keyPath`.
+    /// Decodes and validates a required `@NestedSettings` group at `keyPath`.
+    ///
+    /// - Parameters:
+    ///   - type: Conforming ``RiggedNestedSettings`` group type. Defaults to `Nested.self`.
+    ///   - keyPath: Prefix key path of the nested group.
+    /// - Returns: The decoded `Nested` value when valid, or `nil` if any child or group validation failed.
     public mutating func decodeNested<Nested: RiggedNestedSettings>(
         _ type: Nested.Type = Nested.self,
         keyPath: [String]
@@ -709,8 +853,13 @@ public struct SettingsLoader: Sendable {
         return decoded
     }
 
-    /// Decodes an optional nested `@NestedSettings` group (`Nested?`), returning `nil` when
-    /// no child keys exist under `keyPath` in the merged tree.
+    /// Decodes an optional `@NestedSettings` group (`Nested?`), returning `.some(nil)` when
+    /// no non-null child subtree exists under `keyPath` in ``mergedTree``.
+    ///
+    /// - Parameters:
+    ///   - type: Conforming ``RiggedNestedSettings`` group type. Defaults to `Nested.self`.
+    ///   - keyPath: Prefix key path of the optional nested group.
+    /// - Returns: `.some(nil)` when absent, `.some(decoded)` when valid, or `nil` when present but invalid.
     public mutating func decodeOptionalNested<Nested: RiggedNestedSettings>(
         _ type: Nested.Type = Nested.self,
         keyPath: [String]
@@ -727,12 +876,16 @@ public struct SettingsLoader: Sendable {
 
     // MARK: - Step 6: Finalization & Cross-Field Validation
 
-    /// Appends a custom `ValidationIssue`.
+    /// Appends a custom ``ValidationIssue`` to ``issues``.
+    ///
+    /// - Parameter issue: The validation issue to record.
     public mutating func recordIssue(_ issue: ValidationIssue) {
         issues.append(issue)
     }
 
-    /// Throws `SettingsValidationError` if any field or secret issues were accumulated.
+    /// Throws a scrubbed ``SettingsValidationError`` if any field, source, or secret issues have been recorded.
+    ///
+    /// - Throws: ``SettingsValidationError`` when ``issues`` is non-empty.
     public func throwIfInvalid() throws {
         guard issues.isEmpty else {
             throw SettingsValidationError(
@@ -743,12 +896,19 @@ public struct SettingsLoader: Sendable {
         }
     }
 
-    /// Constructs the immutable `ProvenanceReport` for a successfully decoded settings model.
+    /// Constructs an immutable ``ProvenanceReport`` from all recorded ``provenanceEntries`` and ``warnings``.
+    ///
+    /// - Returns: A ``ProvenanceReport`` snapshot.
     public func buildProvenanceReport() -> ProvenanceReport {
         ProvenanceReport(entries: provenanceEntries, warnings: warnings)
     }
 
-    /// Runs `Settings.validate(_:)` cross-field checks and throws `SettingsValidationError` if non-empty.
+    /// Verifies that no field issues occurred, runs ``RiggedSettings/validate(_:)`` cross-field checks,
+    /// and returns the validated settings model.
+    ///
+    /// - Parameter settings: Candidate settings model constructed after field decoding.
+    /// - Returns: `settings` if both field-level and cross-field validations succeed.
+    /// - Throws: ``SettingsValidationError`` if any issues exist.
     public mutating func finalize<Settings: RiggedSettings>(_ settings: Settings) throws -> Settings {
         try throwIfInvalid()
         let crossFieldIssues = Settings.validate(settings)
@@ -765,8 +925,13 @@ public struct SettingsLoader: Sendable {
 
     // MARK: - Lookup & Precedence Helpers
 
-    /// Resolves the highest-precedence `RawNode` for `keyPath` and its `aliases`, recording
-    /// any lower-precedence alias/canonical matches into `overriddenOrigins`.
+    /// Resolves the highest-precedence ``RawNode`` across `keyPath` and its `aliases`, merging
+    /// lower-precedence alias or canonical matches into ``RawNode/overriddenOrigins``.
+    ///
+    /// - Parameters:
+    ///   - keyPath: Canonical nested key path of the setting.
+    ///   - aliases: Optional ``SettingAlias`` entries (`.cli`, `.env`, `.configPath`). Defaults to `[]`.
+    /// - Returns: The winning ``RawNode`` annotated with shadowed origins, or `nil` if absent across all paths.
     public func lookupNode(
         keyPath: [String],
         aliases: [SettingAlias] = []
@@ -924,7 +1089,7 @@ public struct SettingsLoader: Sendable {
                 ValidationIssue(
                     keyPath: keyPath,
                     kind: .invalidValue,
-                    message: decodeError.description,
+                    message: context.redactor.scrub(decodeError.description),
                     origin: node.origin,
                     expectedType: Value.settingTypeDisplayName,
                     envVariableHint: envHint
@@ -936,7 +1101,7 @@ public struct SettingsLoader: Sendable {
                 ValidationIssue(
                     keyPath: keyPath,
                     kind: .invalidValue,
-                    message: String(describing: error),
+                    message: context.redactor.scrub(String(describing: error)),
                     origin: node.origin,
                     expectedType: Value.settingTypeDisplayName,
                     envVariableHint: envHint
@@ -978,7 +1143,7 @@ public struct SettingsLoader: Sendable {
                     ValidationIssue(
                         keyPath: keyPath,
                         kind: .invalidValue,
-                        message: "Value transform failed: \(error)",
+                        message: context.redactor.scrub("Value transform failed: \(error)"),
                         origin: origin,
                         expectedType: typeName,
                         envVariableHint: envHint

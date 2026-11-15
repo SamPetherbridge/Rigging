@@ -1,8 +1,23 @@
 import Foundation
 
-/// Generates `.env.example` templates and GitHub-Flavored Markdown documentation tables
-/// from `RiggedSettings` field descriptors, redacting all secret defaults by construction.
-public enum DotEnvExporter {
+/// Exports annotated `.env.example` templates and GitHub-Flavored Markdown reference tables
+/// from ``RiggedSettings`` field metadata.
+///
+/// Secret fields never emit literal default values in generated `.env` templates or Markdown tables;
+/// instead, `DotEnvExporter` documents supported secret URI schemes (`op://`, `keychain://`,
+/// `bws://`, `file://`) and masks defaulted secrets with `"**********"`.
+///
+/// ```swift
+/// let dotEnvExample = DotEnvExporter.exportDotEnvTemplate(for: AppSettings.self)
+/// let referenceDocs = DotEnvExporter.exportMarkdownDocs(for: AppSettings.self)
+/// ```
+public enum DotEnvExporter: Sendable {
+    /// Generates an annotated `.env.example` template for a ``RiggedSettings`` model type.
+    ///
+    /// - Parameters:
+    ///   - settingsType: The settings model type to document.
+    ///   - includeDefaults: Whether non-secret default values are pre-populated in assignments.
+    /// - Returns: A formatted `.env` template string with comment headers per field.
     public static func exportDotEnvTemplate<S: RiggedSettings>(
         for settingsType: S.Type,
         includeDefaults: Bool = true
@@ -14,6 +29,13 @@ public enum DotEnvExporter {
         )
     }
 
+    /// Generates an annotated `.env.example` template from explicit field descriptors and configuration.
+    ///
+    /// - Parameters:
+    ///   - fields: Field descriptors to render.
+    ///   - configuration: Settings configuration controlling environment variable prefixes and delimiters.
+    ///   - includeDefaults: Whether non-secret default values are pre-populated in assignments.
+    /// - Returns: A formatted `.env` template string.
     public static func exportDotEnvTemplate(
         fields: [SettingFieldDescriptor],
         configuration: SettingsConfiguration = SettingsConfiguration(),
@@ -63,6 +85,12 @@ public enum DotEnvExporter {
         return blocks.joined(separator: "\n\n") + (blocks.isEmpty ? "" : "\n")
     }
 
+    /// Generates a GitHub-Flavored Markdown configuration reference table for a ``RiggedSettings`` model type.
+    ///
+    /// - Parameters:
+    ///   - settingsType: The settings model type to document.
+    ///   - title: Optional Markdown H1 heading (defaults to the Swift type name of `S`).
+    /// - Returns: A Markdown document containing a table of keys, environment variables, types, defaults, and descriptions.
     public static func exportMarkdownDocs<S: RiggedSettings>(
         for settingsType: S.Type,
         title: String? = nil
@@ -74,6 +102,13 @@ public enum DotEnvExporter {
         )
     }
 
+    /// Generates a GitHub-Flavored Markdown configuration reference table from explicit field descriptors.
+    ///
+    /// - Parameters:
+    ///   - fields: Field descriptors to document.
+    ///   - configuration: Settings configuration controlling environment variable naming.
+    ///   - title: Markdown H1 heading title.
+    /// - Returns: A Markdown document string.
     public static func exportMarkdownDocs(
         fields: [SettingFieldDescriptor],
         configuration: SettingsConfiguration = SettingsConfiguration(),
@@ -164,6 +199,16 @@ public enum DotEnvExporter {
         return result
     }
 
+    /// Computes the canonical environment variable name for `field` under `configuration`.
+    ///
+    /// Explicit `envVariable` and `.env(...)` aliases take precedence; otherwise the normalized
+    /// uppercase `keyPath` segments are joined by ``SettingsConfiguration/envNestedDelimiter`` and
+    /// prefixed with ``SettingsConfiguration/envPrefix``.
+    ///
+    /// - Parameters:
+    ///   - field: Field descriptor to inspect.
+    ///   - configuration: Settings configuration providing `envPrefix` and `envNestedDelimiter`.
+    /// - Returns: Resolved environment variable identifier.
     public static func resolvedEnvName(
         for field: SettingFieldDescriptor,
         configuration: SettingsConfiguration

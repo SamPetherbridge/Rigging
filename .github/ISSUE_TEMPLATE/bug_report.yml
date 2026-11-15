@@ -1,0 +1,89 @@
+name: Bug Report
+description: Report a defect in Rigging's configuration cascade, macro synthesis, validation, or secret providers.
+title: "🐛 "
+labels: ["type: bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Security Notice:** Never paste real API keys, `.p8` PEM private keys, 1Password service-account tokens, or unredacted environment dumps into a public issue. `Rigging` redacts `Secret<T>` values to `**********` in `config show` and `config doctor`, but always double-check your snippet before submitting. To report a security vulnerability, follow [`SECURITY.md`](https://github.com/SamPetherbridge/Rigging/blob/main/SECURITY.md).
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: A concise one-sentence summary of the unexpected behavior.
+      placeholder: "DotEnvSource drops trailing quote when multiline PEM follows an inline comment"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Affected Module
+      description: Which Rigging product or target is affected?
+      options:
+        - Rigging (Umbrella & Macros)
+        - RiggingCore
+        - RiggingOnePassword
+        - RiggingKeychain
+        - RiggingBitwarden
+        - RiggingUnixPass
+        - RiggingArgumentParser
+        - RiggingSwiftConfiguration
+        - RiggingTOML
+        - RiggingYAML
+        - RiggingTesting
+    validations:
+      required: true
+
+  - type: input
+    id: toolchain
+    attributes:
+      label: Swift Toolchain & Operating System
+      description: Output of `swift --version` and your OS / container image.
+      placeholder: "Apple Swift version 6.2 (macOS 15.4 arm64) / swift:6.2-noble (Ubuntu 24.04)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal @Settings Reproduction
+      description: Self-contained Swift snippet (ideally using `SettingsContext.inMemory(...)` from `RiggingTesting`) demonstrating the issue.
+      render: swift
+      placeholder: |
+        import Rigging
+        import RiggingTesting
+
+        @Settings(envPrefix: "APP_", extraKeys: .forbid)
+        struct AppSettings: Sendable {
+            @Setting var port: Int = 8080
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs. Actual Behavior
+      description: What did you expect `Rigging` to resolve, validate, or emit, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor_output
+    attributes:
+      label: Redacted `<cli> config doctor` or Error Output
+      description: Optional output from `<cli> config doctor` or `SettingsValidationError`. Ensure all sensitive paths and credentials are scrubbed.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: secret_hygiene
+    attributes:
+      label: Credential Check
+      options:
+        - label: I have verified that this report contains zero live secrets, tokens, or private keys.
+          required: true

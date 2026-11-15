@@ -59,13 +59,13 @@ struct KeychainProviderTests {
             // 1. Standard generic password using provider's default accessGroup
             SecretResolutionRequest(
                 keyPath: ["apiKey"],
-                rawString: "keychain://com.peth.asc/prod-api-key",
+                rawString: "keychain://com.example.asc/prod-api-key",
                 origin: .projectConfig(path: "/repo/.asc.json", keyPath: ["apiKey"], profile: nil)
             ),
             // 2. Generic password with explicit URI accessGroup and synchronizable=true
             SecretResolutionRequest(
                 keyPath: ["syncedSecret"],
-                rawString: "keychain://com.peth.asc/icloud-token?accessGroup=TEAM123.com.peth.shared&synchronizable=true",
+                rawString: "keychain://com.example.asc/icloud-token?accessGroup=TEAM123.com.example.shared&synchronizable=true",
                 origin: .environment(variable: "ASC_SYNCED_SECRET")
             ),
             // 3. Internet password with kind=internet and synchronizable=false
@@ -86,7 +86,7 @@ struct KeychainProviderTests {
         // Query 1: Generic password + default accessGroup
         #expect(queries[0] == CapturedQuery([
             kSecClass as String: kSecClassGenericPassword as String,
-            kSecAttrService as String: "com.peth.asc",
+            kSecAttrService as String: "com.example.asc",
             kSecAttrAccount as String: "prod-api-key",
             kSecAttrAccessGroup as String: "DEFAULT.com.example.defaultGroup",
             kSecReturnData as String: true,
@@ -96,9 +96,9 @@ struct KeychainProviderTests {
         // Query 2: Generic password + overridden accessGroup + synchronizable=true
         #expect(queries[1] == CapturedQuery([
             kSecClass as String: kSecClassGenericPassword as String,
-            kSecAttrService as String: "com.peth.asc",
+            kSecAttrService as String: "com.example.asc",
             kSecAttrAccount as String: "icloud-token",
-            kSecAttrAccessGroup as String: "TEAM123.com.peth.shared",
+            kSecAttrAccessGroup as String: "TEAM123.com.example.shared",
             kSecAttrSynchronizable as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne as String,

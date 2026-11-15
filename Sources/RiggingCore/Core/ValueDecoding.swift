@@ -1,11 +1,25 @@
 import Foundation
+#if canImport(ObjectiveC)
+import CoreFoundation
+#endif
 
-/// Contextual rules governing scalar, null-sentinel, and collection decoding.
-public struct ValueDecodingContext: Sendable, Equatable {
+/// Contextual rules governing scalar coercion, null-sentinel detection, and string collection parsing.
+public struct ValueDecodingContext: Sendable, Equatable, Hashable {
+    /// Whether enum raw-value and null-sentinel matching is case-sensitive.
     public var caseSensitive: Bool
+
+    /// Strings interpreted as explicit null values when decoding optional or nullable fields.
     public var envNullStrings: Set<String>
+
+    /// Strategy used when decoding `[T]`, `Set<T>`, or `[String: V]` from flat string sources.
     public var envListStrategy: EnvCollectionStrategy
 
+    /// Creates a value-decoding context with explicit rules.
+    ///
+    /// - Parameters:
+    ///   - caseSensitive: Whether string comparisons require exact case equality.
+    ///   - envNullStrings: Sentinel strings treated as null (defaults to `["null", "none", "~"]`).
+    ///   - envListStrategy: Strategy for decoding collections from environment strings.
     public init(
         caseSensitive: Bool = false,
         envNullStrings: Set<String> = ["null", "none", "~"],
@@ -16,13 +30,19 @@ public struct ValueDecodingContext: Sendable, Equatable {
         self.envListStrategy = envListStrategy
     }
 
+    /// Creates a value-decoding context derived from a ``SettingsConfiguration``.
+    ///
+    /// - Parameter configuration: Settings configuration supplying `caseSensitive`, `envNullStrings`, and `envListStrategy`.
     public init(configuration: SettingsConfiguration) {
         self.caseSensitive = configuration.caseSensitive
         self.envNullStrings = configuration.envNullStrings
         self.envListStrategy = configuration.envListStrategy
     }
 
-    /// Returns `true` if `rawValue` is `.null` or a string matching `envNullStrings`.
+    /// Returns `true` if `rawValue` is ``RawValue/null`` or a string matching ``envNullStrings``.
+    ///
+    /// - Parameter rawValue: Candidate configuration value to inspect.
+    /// - Returns: `true` when `rawValue` represents a null value.
     public func representsNull(_ rawValue: RawValue) -> Bool {
         switch rawValue {
         case .null:
@@ -40,24 +60,52 @@ public struct ValueDecodingContext: Sendable, Equatable {
     }
 }
 
-/// Error raised when a `RawValue` cannot be coerced or parsed into the target Swift type.
-public struct ValueDecodingError: Error, Sendable, Equatable, CustomStringConvertible {
+/// An error thrown when an untyped ``RawValue`` cannot be coerced into the requested Swift type.
+public struct ValueDecodingError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
+    /// Human-readable name of the target Swift type (for example, `"Int"` or `"Duration"`).
     public let expectedType: String
+
+    /// Explanation of why coercion failed without echoing unredacted secret inputs.
     public let reason: String
 
+    /// Creates a typed value-decoding error.
+    ///
+    /// - Parameters:
+    ///   - expectedType: Display name of the target Swift type.
+    ///   - reason: Explanation of why the input value was rejected.
     public init(expectedType: String, reason: String) {
         self.expectedType = expectedType
         self.reason = reason
     }
 
+    /// Formatted diagnostic string (`"Invalid <expectedType> value: <reason>"`).
     public var description: String {
         "Invalid \(expectedType) value: \(reason)"
     }
+
+    /// Localized error description matching ``description`` for CLI error reporters.
+    public var errorDescription: String? {
+        description
+    }
 }
 
-/// Protocol implemented by all scalar, structured, enum, and collection types decodable by Rigging.
+/// A type that can be decoded from an untyped ``RawValue`` within a ``SettingsLoader`` pass.
+///
+/// Out-of-the-box conformances cover `String`, `Bool`, all fixed-width signed and unsigned integers,
+/// `Double`, `Float`, `Decimal`, `UUID`, `URL`, `Date`, `Data`, `Duration`, ``ByteCount``,
+/// `RawRepresentable` enums (including case-insensitive `CaseIterable` string enums), `Optional`,
+/// `Array`, `Set`, `Dictionary<String, Value>`, and ``Secret``.
 public protocol SettingValueDecodable: Sendable {
+    /// Human-readable type name displayed in schema exports and validation errors.
     static var settingTypeDisplayName: String { get }
+
+    /// Coerces an untyped ``RawValue`` into an instance of `Self`.
+    ///
+    /// - Parameters:
+    ///   - rawValue: Untyped value from the merged configuration tree.
+    ///   - context: Contextual rules governing case sensitivity, null sentinels, and list parsing.
+    /// - Returns: Decoded value of type `Self`.
+    /// - Throws: ``ValueDecodingError`` when `rawValue` is incompatible with `Self`.
     static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -65,10 +113,16 @@ public protocol SettingValueDecodable: Sendable {
 }
 
 extension SettingValueDecodable {
+    /// Default display name derived from `String(describing: Self.self)`.
     public static var settingTypeDisplayName: String {
         String(describing: Self.self)
     }
 
+    /// Coerces an untyped ``RawValue`` into `Self` using default ``ValueDecodingContext`` settings.
+    ///
+    /// - Parameter rawValue: Untyped configuration value.
+    /// - Returns: Decoded value of type `Self`.
+    /// - Throws: ``ValueDecodingError`` when `rawValue` cannot be coerced to `Self`.
     public static func decodeSettingValue(from rawValue: RawValue) throws -> Self {
         try decodeSettingValue(from: rawValue, context: ValueDecodingContext())
     }
@@ -77,8 +131,10 @@ extension SettingValueDecodable {
 // MARK: - String
 
 extension String: SettingValueDecodable {
+    /// Display name for `String` settings (`"String"`).
     public static var settingTypeDisplayName: String { "String" }
 
+    /// Decodes a scalar or UTF-8 byte ``RawValue`` into a `String`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -109,11 +165,13 @@ extension String: SettingValueDecodable {
 // MARK: - Bool
 
 extension Bool: SettingValueDecodable {
+    /// Display name for `Bool` settings (`"Bool"`).
     public static var settingTypeDisplayName: String { "Bool" }
 
     private static let truthyLiterals: Set<String> = ["true", "1", "yes", "on"]
     private static let falsyLiterals: Set<String> = ["false", "0", "no", "off"]
 
+    /// Decodes booleans, `0`/`1` integers, and `true`/`false`/`yes`/`no`/`on`/`off` strings into a `Bool`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -187,60 +245,70 @@ private func decodeFixedWidthInteger<T: FixedWidthInteger & Sendable>(
 }
 
 extension Int: SettingValueDecodable {
+    /// Decodes a range-checked `Int` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> Int {
         try decodeFixedWidthInteger(Int.self, from: rawValue)
     }
 }
 
 extension Int8: SettingValueDecodable {
+    /// Decodes a range-checked `Int8` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> Int8 {
         try decodeFixedWidthInteger(Int8.self, from: rawValue)
     }
 }
 
 extension Int16: SettingValueDecodable {
+    /// Decodes a range-checked `Int16` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> Int16 {
         try decodeFixedWidthInteger(Int16.self, from: rawValue)
     }
 }
 
 extension Int32: SettingValueDecodable {
+    /// Decodes a range-checked `Int32` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> Int32 {
         try decodeFixedWidthInteger(Int32.self, from: rawValue)
     }
 }
 
 extension Int64: SettingValueDecodable {
+    /// Decodes a range-checked `Int64` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> Int64 {
         try decodeFixedWidthInteger(Int64.self, from: rawValue)
     }
 }
 
 extension UInt: SettingValueDecodable {
+    /// Decodes a range-checked `UInt` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> UInt {
         try decodeFixedWidthInteger(UInt.self, from: rawValue)
     }
 }
 
 extension UInt8: SettingValueDecodable {
+    /// Decodes a range-checked `UInt8` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> UInt8 {
         try decodeFixedWidthInteger(UInt8.self, from: rawValue)
     }
 }
 
 extension UInt16: SettingValueDecodable {
+    /// Decodes a range-checked `UInt16` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> UInt16 {
         try decodeFixedWidthInteger(UInt16.self, from: rawValue)
     }
 }
 
 extension UInt32: SettingValueDecodable {
+    /// Decodes a range-checked `UInt32` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> UInt32 {
         try decodeFixedWidthInteger(UInt32.self, from: rawValue)
     }
 }
 
 extension UInt64: SettingValueDecodable {
+    /// Decodes a range-checked `UInt64` from integer, exact-float, or numeric string configuration values.
     public static func decodeSettingValue(from rawValue: RawValue, context: ValueDecodingContext) throws -> UInt64 {
         try decodeFixedWidthInteger(UInt64.self, from: rawValue)
     }
@@ -249,8 +317,10 @@ extension UInt64: SettingValueDecodable {
 // MARK: - Floating Point & Decimal
 
 extension Double: SettingValueDecodable {
+    /// Display name for `Double` settings (`"Double"`).
     public static var settingTypeDisplayName: String { "Double" }
 
+    /// Decodes a finite `Double` from numeric or string configuration values.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -279,8 +349,10 @@ extension Double: SettingValueDecodable {
 }
 
 extension Float: SettingValueDecodable {
+    /// Display name for `Float` settings (`"Float"`).
     public static var settingTypeDisplayName: String { "Float" }
 
+    /// Decodes a finite `Float` from numeric or string configuration values.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -295,8 +367,10 @@ extension Float: SettingValueDecodable {
 }
 
 extension Decimal: SettingValueDecodable {
+    /// Display name for `Decimal` settings (`"Decimal"`).
     public static var settingTypeDisplayName: String { "Decimal" }
 
+    /// Decodes an exact base-10 `Decimal` using the `en_US_POSIX` locale.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -329,8 +403,10 @@ extension Decimal: SettingValueDecodable {
 // MARK: - Foundation Types (UUID, URL, Date, Data)
 
 extension UUID: SettingValueDecodable {
+    /// Display name for `UUID` settings (`"UUID"`).
     public static var settingTypeDisplayName: String { "UUID" }
 
+    /// Decodes a 36-character RFC 4122 `UUID` string.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -353,8 +429,10 @@ extension UUID: SettingValueDecodable {
 }
 
 extension URL: SettingValueDecodable {
+    /// Display name for `URL` settings (`"URL"`).
     public static var settingTypeDisplayName: String { "URL" }
 
+    /// Decodes a non-empty `URL` string.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -377,8 +455,11 @@ extension URL: SettingValueDecodable {
 }
 
 extension Date: SettingValueDecodable {
+    /// Display name for `Date` settings (`"Date"`).
     public static var settingTypeDisplayName: String { "Date" }
 
+    /// Decodes an ISO-8601 timestamp string (internet date-time with or without fractional seconds, or full date)
+    /// or Unix epoch seconds number into a `Date`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -429,8 +510,10 @@ extension Date: SettingValueDecodable {
 }
 
 extension Data: SettingValueDecodable {
+    /// Display name for `Data` settings (`"Data"`).
     public static var settingTypeDisplayName: String { "Data" }
 
+    /// Decodes raw bytes, `"base64:..."` payloads, UTF-8 strings, or `[UInt8]` arrays into `Data`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -466,8 +549,11 @@ extension Data: SettingValueDecodable {
 // MARK: - Duration
 
 extension Duration: SettingValueDecodable {
+    /// Display name for `Duration` settings (`"Duration"`).
     public static var settingTypeDisplayName: String { "Duration" }
 
+    /// Decodes human-readable duration strings (such as `"500ms"`, `"30s"`, `"5m"`, `"1h30m"`)
+    /// or non-negative numeric seconds into a Swift `Duration`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -591,8 +677,13 @@ extension Duration: SettingValueDecodable {
 
 // MARK: - ByteCount
 
-/// Typed byte-size quantity supporting SI (`KB`, `MB`, `GB`, `TB`) and IEC (`KiB`, `MiB`, `GiB`, `TiB`)
-/// human-readable configuration literals as well as integer byte counts.
+/// A byte-size quantity supporting decimal SI (`KB`, `MB`, `GB`, `TB`, `PB`) and binary IEC
+/// (`KiB`, `MiB`, `GiB`, `TiB`, `PiB`) configuration literals as well as integer byte counts.
+///
+/// ```swift
+/// let maxUpload = try ByteCount.decodeSettingValue(from: .string("25MiB"))
+/// // maxUpload.bytes == 26_214_400
+/// ```
 public struct ByteCount:
     Sendable,
     Equatable,
@@ -603,33 +694,67 @@ public struct ByteCount:
     CustomStringConvertible,
     SettingValueDecodable
 {
+    /// Display name for ``ByteCount`` settings (`"ByteCount"`).
     public static var settingTypeDisplayName: String { "ByteCount" }
 
+    /// Exact number of bytes represented by this value.
     public let bytes: Int64
 
+    /// Creates a byte-size quantity from an exact byte count.
+    ///
+    /// - Parameter bytes: Number of bytes.
     public init(bytes: Int64) {
         self.bytes = bytes
     }
 
+    /// Creates a byte-size quantity from an integer literal representing exact bytes.
+    ///
+    /// - Parameter value: Integer byte count literal.
     public init(integerLiteral value: Int64) {
         self.bytes = value
     }
 
+    /// Compares two ``ByteCount`` values by their underlying ``bytes``.
     public static func < (lhs: ByteCount, rhs: ByteCount) -> Bool {
         lhs.bytes < rhs.bytes
     }
 
+    /// Formatted string representation (`"<bytes> B"`).
     public var description: String {
         "\(bytes) B"
     }
 
+    /// Creates a ``ByteCount`` equal to `count * 1_000` bytes (decimal SI kilobytes).
     public static func kilobytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_000) }
+
+    /// Creates a ``ByteCount`` equal to `count * 1_000_000` bytes (decimal SI megabytes).
     public static func megabytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_000_000) }
+
+    /// Creates a ``ByteCount`` equal to `count * 1_000_000_000` bytes (decimal SI gigabytes).
     public static func gigabytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_000_000_000) }
+
+    /// Creates a ``ByteCount`` equal to `count * 1_000_000_000_000` bytes (decimal SI terabytes).
+    public static func terabytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_000_000_000_000) }
+
+    /// Creates a ``ByteCount`` equal to `count * 1_024` bytes (binary IEC kibibytes).
     public static func kibibytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_024) }
+
+    /// Creates a ``ByteCount`` equal to `count * 1_048_576` bytes (binary IEC mebibytes).
     public static func mebibytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_048_576) }
+
+    /// Creates a ``ByteCount`` equal to `count * 1_073_741_824` bytes (binary IEC gibibytes).
     public static func gibibytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_073_741_824) }
 
+    /// Creates a ``ByteCount`` equal to `count * 1_099_511_627_776` bytes (binary IEC tebibytes).
+    public static func tebibytes(_ count: Int64) -> ByteCount { ByteCount(bytes: count * 1_099_511_627_776) }
+
+    /// Decodes a non-negative ``ByteCount`` from numeric byte counts or SI/IEC unit strings.
+    ///
+    /// - Parameters:
+    ///   - rawValue: Untyped configuration value.
+    ///   - context: Value-decoding context.
+    /// - Returns: Parsed ``ByteCount``.
+    /// - Throws: ``ValueDecodingError`` if negative, malformed, or overflowing `Int64`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -737,6 +862,7 @@ public struct ByteCount:
 // MARK: - RawRepresentable Enums
 
 extension SettingValueDecodable where Self: RawRepresentable, Self.RawValue: SettingValueDecodable {
+    /// Decodes a `RawRepresentable` setting by first decoding its underlying `RawValue`.
     public static func decodeSettingValue(
         from rawValue: RiggingCore.RawValue,
         context: ValueDecodingContext
@@ -753,6 +879,8 @@ extension SettingValueDecodable where Self: RawRepresentable, Self.RawValue: Set
 }
 
 extension SettingValueDecodable where Self: RawRepresentable & CaseIterable, Self.RawValue == String {
+    /// Decodes a `CaseIterable` string enum, matching case-insensitively when ``ValueDecodingContext/caseSensitive``
+    /// is `false` and listing all valid cases on failure.
     public static func decodeSettingValue(
         from rawValue: RiggingCore.RawValue,
         context: ValueDecodingContext
@@ -782,10 +910,12 @@ extension SettingValueDecodable where Self: RawRepresentable & CaseIterable, Sel
 // MARK: - Optional
 
 extension Optional: SettingValueDecodable where Wrapped: SettingValueDecodable {
+    /// Display name for optional settings (`"<Wrapped>?"`).
     public static var settingTypeDisplayName: String {
         "\(Wrapped.settingTypeDisplayName)?"
     }
 
+    /// Decodes `nil` when `rawValue` matches ``ValueDecodingContext/representsNull(_:)``, otherwise decodes `Wrapped`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -800,10 +930,12 @@ extension Optional: SettingValueDecodable where Wrapped: SettingValueDecodable {
 // MARK: - Collections ([T], Set<T>, [String: V])
 
 extension Array: SettingValueDecodable where Element: SettingValueDecodable {
+    /// Display name for array settings (`"[<Element>]"`).
     public static var settingTypeDisplayName: String {
         "[\(Element.settingTypeDisplayName)]"
     }
 
+    /// Decodes structured `.array` nodes or formatted list strings according to ``ValueDecodingContext/envListStrategy``.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -828,10 +960,12 @@ extension Array: SettingValueDecodable where Element: SettingValueDecodable {
 }
 
 extension Set: SettingValueDecodable where Element: SettingValueDecodable & Hashable {
+    /// Display name for set settings (`"Set<<Element>>"`).
     public static var settingTypeDisplayName: String {
         "Set<\(Element.settingTypeDisplayName)>"
     }
 
+    /// Decodes structured `.array` nodes or formatted list strings into a deduplicated `Set`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -842,10 +976,12 @@ extension Set: SettingValueDecodable where Element: SettingValueDecodable & Hash
 }
 
 extension Dictionary: SettingValueDecodable where Key == String, Value: SettingValueDecodable {
+    /// Display name for string-keyed dictionary settings (`"[String: <Value>]"`).
     public static var settingTypeDisplayName: String {
         "[String: \(Value.settingTypeDisplayName)]"
     }
 
+    /// Decodes structured `.object` nodes or formatted `k=v` / JSON object strings into `[String: Value]`.
     public static func decodeSettingValue(
         from rawValue: RawValue,
         context: ValueDecodingContext
@@ -1013,16 +1149,53 @@ private func convertJSONObjectToRawValue(_ object: Any, expectedType: String) th
     if let string = object as? String {
         return .string(string)
     }
+    #if canImport(ObjectiveC)
     if let number = object as? NSNumber {
         if CFGetTypeID(number) == CFBooleanGetTypeID() {
             return .bool(number.boolValue)
         }
         let objCType = String(cString: number.objCType)
         if ["c", "i", "s", "l", "q", "C", "I", "S", "L", "Q"].contains(objCType) {
+            if objCType == "Q" && number.uint64Value > UInt64(Int64.max) {
+                return .double(number.doubleValue)
+            }
             return .int(number.int64Value)
         }
         return .double(number.doubleValue)
     }
+    #else
+    if let boolValue = object as? Bool {
+        return .bool(boolValue)
+    }
+    if let int64Value = object as? Int64 {
+        return .int(int64Value)
+    }
+    if let intValue = object as? Int {
+        return .int(Int64(intValue))
+    }
+    if let uint64Value = object as? UInt64 {
+        if uint64Value <= UInt64(Int64.max) {
+            return .int(Int64(uint64Value))
+        }
+        return .double(Double(uint64Value))
+    }
+    if let doubleValue = object as? Double {
+        return .double(doubleValue)
+    }
+    if let number = object as? NSNumber {
+        let objCType = String(cString: number.objCType)
+        if objCType == "B" {
+            return .bool(number.boolValue)
+        }
+        if objCType == "d" || objCType == "f" {
+            return .double(number.doubleValue)
+        }
+        if objCType == "Q" && number.uint64Value > UInt64(Int64.max) {
+            return .double(number.doubleValue)
+        }
+        return .int(number.int64Value)
+    }
+    #endif
     if let array = object as? [Any] {
         let items = try array.map {
             RawNode(

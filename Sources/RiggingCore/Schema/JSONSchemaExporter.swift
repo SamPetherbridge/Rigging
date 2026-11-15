@@ -1,9 +1,26 @@
 import Foundation
 
-/// Exports Draft 2020-12 JSON Schema documents from `RiggedSettings` field metadata.
-public enum JSONSchemaExporter {
+/// Generates JSON Schema Draft 2020-12 documents from ``RiggedSettings`` field descriptors.
+///
+/// Exported schemas include `$schema`, `title`, nested `properties`, `required` arrays,
+/// `"writeOnly": true` and `"x-secret": true` markers on secret fields (omitting secret defaults and
+/// examples by construction), and optional `"profiles"` overlays when project or user config files
+/// are enabled.
+///
+/// ```swift
+/// let schemaJSON = JSONSchemaExporter.export(for: AppSettings.self, prettyPrinted: true)
+/// ```
+public enum JSONSchemaExporter: Sendable {
+    /// Canonical JSON Schema Draft 2020-12 meta-schema URI.
     public static let draft202012URI = "https://json-schema.org/draft/2020-12/schema"
 
+    /// Exports a JSON Schema Draft 2020-12 string for a ``RiggedSettings`` model type.
+    ///
+    /// - Parameters:
+    ///   - settingsType: The settings model type to inspect.
+    ///   - title: Optional schema `title` (defaults to the Swift type name of `S`).
+    ///   - prettyPrinted: Whether to format the JSON document with indentation and sorted keys.
+    /// - Returns: A UTF-8 JSON Schema document string.
     public static func export<S: RiggedSettings>(
         for settingsType: S.Type,
         title: String? = nil,
@@ -17,6 +34,14 @@ public enum JSONSchemaExporter {
         )
     }
 
+    /// Exports a JSON Schema Draft 2020-12 string from explicit field descriptors and configuration.
+    ///
+    /// - Parameters:
+    ///   - fields: Field descriptors describing top-level and nested settings.
+    ///   - configuration: Settings configuration controlling `additionalProperties` and `profiles` support.
+    ///   - title: Schema `title` property.
+    ///   - prettyPrinted: Whether to format the JSON document with indentation and sorted keys.
+    /// - Returns: A UTF-8 JSON Schema document string.
     public static func export(
         fields: [SettingFieldDescriptor],
         configuration: SettingsConfiguration = SettingsConfiguration(),

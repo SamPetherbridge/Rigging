@@ -1,29 +1,56 @@
 import Foundation
 
-/// Untyped configuration value extracted from a configuration source before typed decoding.
+/// An untyped configuration value extracted from a ``SettingsSource`` prior to typed Swift decoding.
 public enum RawValue: Sendable, Equatable, Hashable, Codable {
+    /// A textual scalar value.
     case string(String)
+
+    /// A boolean scalar value.
     case bool(Bool)
+
+    /// A signed 64-bit integer scalar value.
     case int(Int64)
+
+    /// A double-precision floating-point scalar value.
     case double(Double)
+
+    /// Raw binary bytes (for example, non-UTF8 secret file contents or `<data>` plist nodes).
     case data(Data)
+
+    /// An explicit null value (`null` in JSON or a configured null sentinel in `.env` / environment variables).
     case null
+
+    /// An ordered array of child ``RawNode`` elements.
     case array([RawNode])
+
+    /// A keyed dictionary of child ``RawNode`` entries.
     case object([String: RawNode])
 
+    /// Indicates whether this value is ``null``.
     public var isNull: Bool {
         if case .null = self { return true }
         return false
     }
 }
 
-/// A single node in a `RawConfigTree`, pairing a `RawValue` with its winning `SettingOrigin`
-/// and any lower-priority origins it shadowed during source merging.
+/// A node in a ``RawConfigTree`` pairing an untyped ``RawValue`` with its winning ``SettingOrigin``
+/// and any lower-priority origins displaced during source merging.
 public struct RawNode: Sendable, Equatable, Hashable, Codable {
+    /// Untyped value held at this node.
     public var value: RawValue
+
+    /// Highest-priority provenance source that supplied ``value``.
     public var origin: SettingOrigin
+
+    /// Ordered lower-priority origins shadowed by ``origin`` from highest to lowest displaced priority.
     public var overriddenOrigins: [SettingOrigin]
 
+    /// Creates a configuration node with provenance metadata.
+    ///
+    /// - Parameters:
+    ///   - value: Untyped configuration value.
+    ///   - origin: Winning ``SettingOrigin`` for `value`.
+    ///   - overriddenOrigins: Lower-priority origins shadowed by `origin`.
     public init(
         value: RawValue,
         origin: SettingOrigin,
@@ -35,18 +62,35 @@ public struct RawNode: Sendable, Equatable, Hashable, Codable {
     }
 }
 
-/// Hierarchical intermediate representation produced by each `SettingsSource` and merged across
-/// the source precedence cascade.
+/// Hierarchical intermediate representation produced by each ``SettingsSource`` and merged across
+/// the configuration precedence cascade.
+///
+/// `RawConfigTree` preserves exact ``SettingOrigin`` provenance at every leaf and container node,
+/// deep-merges nested `.object` dictionaries across sources, normalizes camelCase / `snake_case` /
+/// `kebab-case` identifiers when `caseSensitive` is `false`, and detects undeclared keys via
+/// ``unknownKeyPaths(declaredPaths:arbitraryChildPrefixes:caseSensitive:)``.
+///
+/// ```swift
+/// var tree = RawConfigTree()
+/// tree.set(path: ["database", "port"], value: .int(5432), origin: .environment(variable: "DB_PORT"))
+/// let node = tree.lookup(path: ["database", "port"])
+/// ```
 public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
-    /// Structured hierarchical configuration nodes keyed by path segments.
+    /// Hierarchical configuration nodes keyed by top-level path segment.
     public var root: [String: RawNode]
 
-    /// Optional raw environment/dotenv variable map keyed by exact variable name, used to resolve
-    /// explicit `@Setting(aliases: [.env("...")])` bindings that bypass `envPrefix`.
+    /// Flat map of raw environment and `.env` variable assignments used to resolve explicit
+    /// ``SettingAlias/env(_:)`` bindings that bypass ``SettingsConfiguration/envPrefix``.
     public var directEnvironment: [String: RawNode]
 
+    /// An empty configuration tree containing zero hierarchical or direct-environment entries.
     public static let empty = RawConfigTree()
 
+    /// Creates a configuration tree from root and direct-environment node dictionaries.
+    ///
+    /// - Parameters:
+    ///   - root: Hierarchical configuration nodes.
+    ///   - directEnvironment: Raw variable-name map for direct `.env(...)` alias lookups.
     public init(
         root: [String: RawNode] = [:],
         directEnvironment: [String: RawNode] = [:]
@@ -55,13 +99,20 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         self.directEnvironment = directEnvironment
     }
 
+    /// Indicates whether both ``root`` and ``directEnvironment`` contain zero entries.
     public var isEmpty: Bool {
         root.isEmpty && directEnvironment.isEmpty
     }
 
     // MARK: - Mutation
 
-    /// Sets a value at `path`, recording any displaced origin in `overriddenOrigins`.
+    /// Inserts or overwrites a value at `path`, recording any displaced origin in ``RawNode/overriddenOrigins``.
+    ///
+    /// - Parameters:
+    ///   - path: Non-empty hierarchical path segments.
+    ///   - value: Untyped ``RawValue`` to store.
+    ///   - origin: Provenance of `value`.
+    ///   - caseSensitive: Whether segment matching is case-sensitive.
     public mutating func set(
         path: [String],
         value: RawValue,
@@ -75,9 +126,12 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         )
     }
 
-    /// Inserts or overwrites `node` at `path`. When overwriting an existing node (e.g. a later
-    /// `.env` file overriding an earlier `.env` file), the displaced node's origin and its own
-    /// `overriddenOrigins` are preserved.
+    /// Inserts or overwrites `node` at `path`, preserving displaced origins when an existing entry is shadowed.
+    ///
+    /// - Parameters:
+    ///   - path: Non-empty hierarchical path segments.
+    ///   - node: Configuration node with value and provenance.
+    ///   - caseSensitive: Whether segment matching is case-sensitive.
     public mutating func set(
         path: [String],
         node: RawNode,
@@ -93,7 +147,13 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         )
     }
 
-    /// Records a raw environment or `.env` entry by variable name for direct alias lookups.
+    /// Records a raw environment or `.env` entry by exact variable name for ``SettingAlias/env(_:)`` lookups.
+    ///
+    /// - Parameters:
+    ///   - variable: Environment or `.env` variable name.
+    ///   - value: Untyped ``RawValue`` to store.
+    ///   - origin: Provenance of `value`.
+    ///   - caseSensitive: Whether variable-name matching is case-sensitive.
     public mutating func setEnvironmentEntry(
         _ variable: String,
         value: RawValue,
@@ -107,7 +167,12 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         )
     }
 
-    /// Records a raw environment or `.env` node by variable name, preserving overridden origins.
+    /// Records a raw environment or `.env` node by variable name, preserving displaced origins.
+    ///
+    /// - Parameters:
+    ///   - variable: Environment or `.env` variable name.
+    ///   - node: Configuration node with value and provenance.
+    ///   - caseSensitive: Whether variable-name matching is case-sensitive.
     public mutating func setEnvironmentEntry(
         _ variable: String,
         node: RawNode,
@@ -134,8 +199,13 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
 
     // MARK: - Lookup
 
-    /// Looks up a node at `path`. When `caseSensitive` is `false`, matches keys case-insensitively
-    /// first and then by normalized identifier (`apiTimeout` <-> `api_timeout` <-> `API_TIMEOUT`).
+    /// Looks up a node at `path`, matching normalized identifiers (`apiTimeout` / `api_timeout` / `API_TIMEOUT`)
+    /// when `caseSensitive` is `false`.
+    ///
+    /// - Parameters:
+    ///   - path: Hierarchical path segments to query.
+    ///   - caseSensitive: Whether key matching requires exact case equality.
+    /// - Returns: Matching ``RawNode`` if present, or `nil` otherwise.
     public func lookup(path: [String], caseSensitive: Bool = false) -> RawNode? {
         let filtered = path.filter { !$0.isEmpty }
         guard !filtered.isEmpty else { return nil }
@@ -163,7 +233,12 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         return nil
     }
 
-    /// Looks up a raw environment or `.env` entry by variable name.
+    /// Looks up a raw environment or `.env` entry recorded in ``directEnvironment``.
+    ///
+    /// - Parameters:
+    ///   - variable: Environment variable identifier to query.
+    ///   - caseSensitive: Whether variable-name matching is case-sensitive.
+    /// - Returns: Matching ``RawNode`` if present, or `nil` otherwise.
     public func lookupEnvironmentEntry(
         _ variable: String,
         caseSensitive: Bool = true
@@ -182,7 +257,12 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
     // MARK: - Merging
 
     /// Merges `self` (higher priority) over `lowerPriority`, deep-merging `.object` dictionaries
-    /// and appending shadowed origins into `overriddenOrigins`.
+    /// and recording displaced origins in ``RawNode/overriddenOrigins``.
+    ///
+    /// - Parameters:
+    ///   - lowerPriority: Lower-precedence configuration tree.
+    ///   - caseSensitive: Whether key matching during merging is case-sensitive.
+    /// - Returns: Combined ``RawConfigTree`` preserving full provenance history.
     public func merging(
         lowerPriority: RawConfigTree,
         caseSensitive: Bool = false
@@ -202,19 +282,22 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
 
     // MARK: - Inspection & Unknown Key Detection
 
-    /// Returns all leaf (non-object, or empty-object) key paths in deterministic sorted order.
+    /// Returns all leaf (non-object or empty-object) key paths and nodes in deterministic sorted order.
+    ///
+    /// - Returns: Sorted array of `(keyPath, node)` pairs.
     public func allLeafNodes() -> [(keyPath: [String], node: RawNode)] {
         var results: [(keyPath: [String], node: RawNode)] = []
         Self.collectLeafNodes(from: root, prefix: [], into: &results)
         return results
     }
 
-    /// Finds unknown configuration key paths not matching any declared schema path.
+    /// Returns leaf key paths in ``root`` that do not match any declared schema path or dynamic dictionary prefix.
     ///
     /// - Parameters:
-    ///   - declaredPaths: Canonical key paths declared by the settings schema (plus any `.configPath` aliases).
-    ///   - arbitraryChildPrefixes: Key paths corresponding to `[String: T]` dictionary fields whose child keys are dynamic.
-    ///   - caseSensitive: Whether key comparison is case-sensitive.
+    ///   - declaredPaths: Canonical key paths declared by the settings schema and its aliases.
+    ///   - arbitraryChildPrefixes: Key paths of `[String: V]` dictionary fields whose child keys are user-defined.
+    ///   - caseSensitive: Whether path comparison is case-sensitive.
+    /// - Returns: Ordered `(keyPath, origin)` pairs for undeclared keys.
     public func unknownKeyPaths(
         declaredPaths: [[String]],
         arbitraryChildPrefixes: [[String]] = [],
@@ -450,6 +533,13 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         }
     }
 
+    /// Returns `true` when two key-path arrays have equal length and matching segments.
+    ///
+    /// - Parameters:
+    ///   - lhs: First key path.
+    ///   - rhs: Second key path.
+    ///   - caseSensitive: Whether segment comparison is case-sensitive.
+    /// - Returns: `true` if every corresponding segment matches.
     public static func pathsMatch(
         _ lhs: [String],
         _ rhs: [String],
@@ -469,6 +559,14 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         return true
     }
 
+    /// Returns `true` when two single-segment keys match under the requested case and normalization rules.
+    ///
+    /// - Parameters:
+    ///   - lhs: First key segment.
+    ///   - rhs: Second key segment.
+    ///   - caseSensitive: Whether comparison requires exact case equality.
+    ///   - allowIdentifierNormalization: Whether `camelCase`, `snake_case`, and `kebab-case` normalize together when `caseSensitive` is `false`.
+    /// - Returns: `true` if the two keys refer to the same logical identifier.
     public static func keysMatch(
         _ lhs: String,
         _ rhs: String,
@@ -511,8 +609,11 @@ public struct RawConfigTree: Sendable, Equatable, Hashable, Codable {
         return nil
     }
 
-    /// Converts camelCase, PascalCase, snake_case, SCREAMING_SNAKE_CASE, and kebab-case
-    /// into a canonical lowercase snake_case representation for flexible key matching.
+    /// Normalizes `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, and `kebab-case`
+    /// identifiers into canonical lowercase `snake_case`.
+    ///
+    /// - Parameter key: Raw identifier string (for example, `"apiTimeout"` or `"HTTPSPort"`).
+    /// - Returns: Canonical lowercase `snake_case` identifier (for example, `"api_timeout"` or `"https_port"`).
     public static func normalizeIdentifier(_ key: String) -> String {
         guard !key.isEmpty else { return key }
         var scalars: [Character] = []

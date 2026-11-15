@@ -1,0 +1,15 @@
+version: 1
+builder:
+  configs:
+    - documentation_targets:
+        - Rigging
+        - RiggingCore
+        - RiggingOnePassword
+        - RiggingKeychain
+        - RiggingBitwarden
+        - RiggingUnixPass
+        - RiggingArgumentParser
+        - RiggingSwiftConfiguration
+        - RiggingTOML
+        - RiggingYAML
+        - RiggingTesting

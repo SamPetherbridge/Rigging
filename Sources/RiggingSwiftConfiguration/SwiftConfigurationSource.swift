@@ -4,21 +4,36 @@ import RiggingCore
 
 // MARK: - Key Specification for `SwiftConfigurationSource`
 
-/// Describes a lookup key and expected value type(s) when bridging an opaque
-/// `Configuration.ConfigProvider` or `Configuration.ConfigReader` into `Rigging`.
+/// Describes a lookup key path, fallback aliases, and candidate value types when bridging an
+/// `apple/swift-configuration` `ConfigProvider` or `ConfigReader` into Rigging.
+///
+/// Use ``specs(for:)`` to derive specifications automatically for every leaf property in a
+/// `RiggedSettings` model, or construct custom specifications with string literals:
+///
+/// ```swift
+/// let spec: SwiftConfigurationKeySpec = "http.max-connections"
+/// ```
 public struct SwiftConfigurationKeySpec: Sendable, Equatable, Hashable, ExpressibleByStringLiteral {
-    /// Primary `swift-configuration` key to query.
+    /// Primary `swift-configuration` key queried first.
     public let configKey: ConfigKey
 
-    /// Fallback `swift-configuration` keys (e.g. kebab-case or alias paths) tried if `configKey` returns `nil`.
+    /// Fallback `swift-configuration` keys (such as `kebab-case`, `snake_case`, or `.configPath` aliases)
+    /// queried in order when ``configKey`` returns `nil`.
     public let fallbackKeys: [ConfigKey]
 
-    /// Destination key-path in `Rigging`'s `RawConfigTree`.
+    /// Destination key path written into Rigging's `RawConfigTree`.
     public let targetKeyPath: [String]
 
-    /// Candidate `ConfigType`s to probe in order when reading from `ConfigProvider`.
+    /// Ordered `Configuration.ConfigType` candidates probed when reading from a `ConfigProvider` or `ConfigReader`.
     public let candidateTypes: [ConfigType]
 
+    /// Creates a key specification mapping a `swift-configuration` key to a Rigging key path.
+    ///
+    /// - Parameters:
+    ///   - configKey: Primary `ConfigKey` to query.
+    ///   - fallbackKeys: Alternate keys probed when `configKey` yields `nil`.
+    ///   - targetKeyPath: Destination Rigging key path; defaults to `configKey.components`.
+    ///   - candidateTypes: Ordered `ConfigType`s to probe; defaults to ``allProbeTypes``.
     public init(
         configKey: ConfigKey,
         fallbackKeys: [ConfigKey] = [],
@@ -31,11 +46,15 @@ public struct SwiftConfigurationKeySpec: Sendable, Equatable, Hashable, Expressi
         self.candidateTypes = candidateTypes
     }
 
+    /// Creates a key specification from a dot-separated string literal (for example, `"http.port"`).
+    ///
+    /// - Parameter value: Dot-separated key path passed to `ConfigKey.init(_:)`.
     public init(stringLiteral value: String) {
         let key = ConfigKey(value)
         self.init(configKey: key, targetKeyPath: key.components)
     }
 
+    /// Exhaustive list of `Configuration.ConfigType` cases probed when no schema-specific order is supplied.
     public static let allProbeTypes: [ConfigType] = [
         .string,
         .int,
@@ -49,8 +68,11 @@ public struct SwiftConfigurationKeySpec: Sendable, Equatable, Hashable, Expressi
         .byteChunkArray,
     ]
 
-    /// Derives `SwiftConfigurationKeySpec` entries for every leaf field (and `.configPath` alias)
-    /// declared in `Settings.fieldDescriptors`.
+    /// Derives ``SwiftConfigurationKeySpec`` entries for every leaf field (including `.configPath` aliases,
+    /// `kebab-case` variants, and `snake_case` variants) declared on `settingsType`.
+    ///
+    /// - Parameter settingsType: The `RiggedSettings` type whose `fieldDescriptors` will be inspected.
+    /// - Returns: Schema-ordered key specifications covering all leaf settings.
     public static func specs<Settings: RiggedSettings>(
         for settingsType: Settings.Type
     ) -> [SwiftConfigurationKeySpec] {
@@ -115,32 +137,45 @@ public struct SwiftConfigurationKeySpec: Sendable, Equatable, Hashable, Expressi
     }
 
     private static func preferredProbeTypes(for field: SettingFieldDescriptor) -> [ConfigType] {
-        if field.isSecret {
-            return [.string, .bytes]
-        }
+        let baseTypes: [ConfigType]
         switch field.schemaType {
         case .string, .enumValues:
-            return [.string, .int, .double, .bool, .bytes]
+            baseTypes = [.string, .int, .double, .bool, .bytes]
         case .integer:
-            return [.int, .string, .double]
+            baseTypes = [.int, .string, .double]
         case .number:
-            return [.double, .int, .string]
+            baseTypes = [.double, .int, .string]
         case .boolean:
-            return [.bool, .string, .int]
+            baseTypes = [.bool, .string, .int]
         case .array(let itemType):
             switch itemType {
             case .integer:
-                return [.intArray, .stringArray, .string]
+                baseTypes = [.intArray, .stringArray, .string]
             case .number:
-                return [.doubleArray, .stringArray, .string]
+                baseTypes = [.doubleArray, .stringArray, .string]
             case .boolean:
-                return [.boolArray, .stringArray, .string]
+                baseTypes = [.boolArray, .stringArray, .string]
             default:
-                return [.stringArray, .byteChunkArray, .string]
+                baseTypes = [.stringArray, .byteChunkArray, .string]
             }
         case .dictionary, .object:
-            return [.string, .bytes]
+            baseTypes = [.string, .bytes]
         }
+
+        guard field.isSecret else {
+            return baseTypes
+        }
+
+        // Probe `.string` first on `@SecretSetting` fields so `op://` / `keychain://` / `bws://`
+        // URI references resolve before typed coercions, then fall back to typed ConfigTypes & `.bytes`.
+        var ordered: [ConfigType] = [.string]
+        for candidate in baseTypes where !ordered.contains(candidate) {
+            ordered.append(candidate)
+        }
+        if !ordered.contains(.bytes) {
+            ordered.append(.bytes)
+        }
+        return ordered
     }
 
     static func camelToKebab(_ input: String) -> String {
@@ -174,12 +209,20 @@ public struct SwiftConfigurationKeySpec: Sendable, Equatable, Hashable, Expressi
 
 // MARK: - Direction A: `SwiftConfigurationSource`
 
-/// Direction A adapter wrapping a `Configuration.ConfigProvider`, `Configuration.ConfigReader`,
-/// or `[AbsoluteConfigKey: ConfigValue]` snapshot as a `Rigging` `SettingsSource`.
+/// A `SettingsSource` adapter that bridges a `Configuration.ConfigProvider`, `Configuration.ConfigReader`,
+/// or `[AbsoluteConfigKey: ConfigValue]` dictionary into Rigging's configuration pipeline.
 ///
-/// Values read from `swift-configuration` participate in `Rigging`'s full source precedence
-/// cascade, two-phase batched secret resolution (e.g. `"op://..."` strings supplied via a
-/// `ConfigProvider`), aggregated validation, and `$field` provenance tracking.
+/// Values read from `swift-configuration` participate in Rigging's full source precedence cascade,
+/// two-phase batched secret resolution (for example, `"op://..."` strings supplied via a
+/// `ConfigProvider`), aggregated schema validation, and `$field` provenance tracking.
+///
+/// ```swift
+/// let provider = InMemoryProvider(values: [
+///     "http.host": "0.0.0.0",
+///     "http.port": 8080,
+/// ])
+/// let source = SwiftConfigurationSource(provider: provider, for: AppSettings.self)
+/// ```
 public struct SwiftConfigurationSource: SettingsSource, Sendable {
     private enum Backing: Sendable {
         case staticValues(name: String, values: [AbsoluteConfigKey: ConfigValue])
@@ -198,6 +241,7 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
 
     private let backing: Backing
 
+    /// Human-readable name identifying the underlying `ConfigProvider` or `ConfigReader` in provenance reports.
     public var sourceName: String {
         switch backing {
         case .staticValues(let name, _):
@@ -210,6 +254,10 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
     }
 
     /// Creates a `SettingsSource` from an explicit dictionary of `AbsoluteConfigKey` values.
+    ///
+    /// - Parameters:
+    ///   - values: Static `ConfigValue` entries keyed by `AbsoluteConfigKey`.
+    ///   - name: Provenance source name recorded in `SettingOrigin.customSource`.
     public init(
         values: [AbsoluteConfigKey: ConfigValue],
         name: String = "SwiftConfigurationSource"
@@ -218,6 +266,10 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
     }
 
     /// Creates a `SettingsSource` from a dictionary of relative `ConfigKey` values.
+    ///
+    /// - Parameters:
+    ///   - configValues: Static `ConfigValue` entries keyed by `ConfigKey`.
+    ///   - name: Provenance source name recorded in `SettingOrigin.customSource`.
     public init(
         configValues: [ConfigKey: ConfigValue],
         name: String = "SwiftConfigurationSource"
@@ -229,15 +281,14 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
         self.backing = .staticValues(name: name, values: converted)
     }
 
-    /// Wraps any `Configuration.ConfigProvider` as a `Rigging` `SettingsSource`.
+    /// Wraps any `Configuration.ConfigProvider` as a Rigging `SettingsSource`.
     ///
     /// - Parameters:
     ///   - provider: The upstream `swift-configuration` provider.
-    ///   - keys: Optional explicit key specs to query. When omitted, `SwiftConfigurationSource`
-    ///     automatically extracts enumerable snapshot entries (such as `InMemoryProvider` and
-    ///     JSON/YAML file snapshots). For non-enumerable providers like `EnvironmentVariablesProvider`,
-    ///     prefer `init(provider:for:)` or pass explicit `keys`.
-    ///   - useFetch: When `true`, calls `provider.fetchValue(forKey:type:)` instead of `value(forKey:type:)`.
+    ///   - keys: Optional explicit key specifications to query. Enumerable snapshot entries (such as
+    ///     `InMemoryProvider`) are extracted automatically; for non-enumerable providers like
+    ///     `EnvironmentVariablesProvider`, prefer ``init(provider:for:additionalKeys:useFetch:)`` or pass `keys`.
+    ///   - useFetch: When `true`, calls `provider.fetchValue(forKey:type:)` instead of `provider.value(forKey:type:)`.
     public init(
         provider: any ConfigProvider,
         keys: [SwiftConfigurationKeySpec] = [],
@@ -246,7 +297,13 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
         self.backing = .provider(provider: provider, keys: keys, useFetch: useFetch)
     }
 
-    /// Wraps any `Configuration.ConfigProvider` using schema key specs derived from `settingsType`.
+    /// Wraps any `Configuration.ConfigProvider` using schema key specifications derived from `settingsType`.
+    ///
+    /// - Parameters:
+    ///   - provider: The upstream `swift-configuration` provider.
+    ///   - settingsType: The `RiggedSettings` model whose leaf key paths, `kebab-case`, and `snake_case` variants are probed.
+    ///   - additionalKeys: Extra key specifications probed alongside schema-derived keys.
+    ///   - useFetch: When `true`, calls `provider.fetchValue(forKey:type:)` instead of `provider.value(forKey:type:)`.
     public init<Settings: RiggedSettings>(
         provider: any ConfigProvider,
         for settingsType: Settings.Type,
@@ -257,7 +314,13 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
         self.backing = .provider(provider: provider, keys: derived, useFetch: useFetch)
     }
 
-    /// Wraps a `Configuration.ConfigReader` as a `Rigging` `SettingsSource`.
+    /// Wraps a `Configuration.ConfigReader` as a Rigging `SettingsSource`.
+    ///
+    /// - Parameters:
+    ///   - reader: Upstream `ConfigReader` (including scoped readers created with `reader.scoped(to:)`).
+    ///   - keys: Optional explicit key specifications to probe through `reader`.
+    ///   - name: Provenance source name recorded in `SettingOrigin.customSource`.
+    ///   - useFetch: When `true`, invokes `fetch*` methods on `ConfigReader` instead of synchronous accessors.
     public init(
         reader: ConfigReader,
         keys: [SwiftConfigurationKeySpec] = [],
@@ -267,7 +330,14 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
         self.backing = .reader(reader: reader, name: name, keys: keys, useFetch: useFetch)
     }
 
-    /// Wraps a `Configuration.ConfigReader` using schema key specs derived from `settingsType`.
+    /// Wraps a `Configuration.ConfigReader` using schema key specifications derived from `settingsType`.
+    ///
+    /// - Parameters:
+    ///   - reader: Upstream `ConfigReader` (including scoped readers).
+    ///   - settingsType: The `RiggedSettings` model whose leaf key paths, `kebab-case`, and `snake_case` variants are probed.
+    ///   - additionalKeys: Extra key specifications probed alongside schema-derived keys.
+    ///   - name: Provenance source name recorded in `SettingOrigin.customSource`.
+    ///   - useFetch: When `true`, invokes `fetch*` methods on `ConfigReader` instead of synchronous accessors.
     public init<Settings: RiggedSettings>(
         reader: ConfigReader,
         for settingsType: Settings.Type,
@@ -279,6 +349,13 @@ public struct SwiftConfigurationSource: SettingsSource, Sendable {
         self.backing = .reader(reader: reader, name: name, keys: derived, useFetch: useFetch)
     }
 
+    /// Reads values from the underlying `ConfigProvider`, `ConfigReader`, or dictionary into a `RawConfigTree`.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration controlling key case sensitivity.
+    ///   - context: Execution context for the load pass.
+    /// - Returns: A `RawConfigTree` tagged with `SettingOrigin.customSource` provenance.
+    /// - Throws: Rethrows unexpected transport errors thrown by asynchronous `fetchValue` providers.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext

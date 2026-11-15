@@ -1,14 +1,22 @@
 import Foundation
 
-/// A single key-value entry parsed from a `.env` file, preserving its 1-based starting line number.
+/// A key-value assignment parsed from a `.env` file together with its 1-based starting line number.
 public struct DotEnvEntry: Sendable, Equatable, Hashable {
-    /// The trimmed variable name.
+    /// Trimmed variable identifier before `=`.
     public let key: String
-    /// The resolved string value after quote unescaping and optional `${...}` interpolation.
+
+    /// Resolved string value after quote unescaping and optional `${...}` variable expansion.
     public let value: String
-    /// The 1-based line number where this entry began in the `.env` source.
+
+    /// One-based line number where this assignment began in the `.env` file.
     public let line: Int
 
+    /// Creates a parsed `.env` entry.
+    ///
+    /// - Parameters:
+    ///   - key: Variable identifier.
+    ///   - value: Resolved string value.
+    ///   - line: One-based line number in the `.env` document.
     public init(key: String, value: String, line: Int) {
         self.key = key
         self.value = value
@@ -16,21 +24,30 @@ public struct DotEnvEntry: Sendable, Equatable, Hashable {
     }
 }
 
-/// An error encountered while parsing `.env` content.
+/// An error thrown when `.env` content contains malformed quotes, escapes, or variable interpolations.
 public struct DotEnvParseError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
-    /// Optional file path for diagnostics.
+    /// Optional `.env` file path associated with the parse failure.
     public let path: String?
-    /// 1-based line number where the syntax error started.
+
+    /// One-based line number where the syntax error started.
     public let line: Int
-    /// Human-readable diagnostic message.
+
+    /// Human-readable description of the syntax error.
     public let message: String
 
+    /// Creates a `.env` syntax error with file and line context.
+    ///
+    /// - Parameters:
+    ///   - path: Optional path to the `.env` file being parsed.
+    ///   - line: One-based line number where parsing failed.
+    ///   - message: Diagnostic explanation of the syntax error.
     public init(path: String? = nil, line: Int, message: String) {
         self.path = path
         self.line = line
         self.message = message
     }
 
+    /// Formatted `<path>:<line>: <message>` diagnostic string.
     public var description: String {
         if let path {
             return "\(path):\(line): \(message)"
@@ -38,17 +55,33 @@ public struct DotEnvParseError: Error, Sendable, Equatable, Hashable, CustomStri
         return "line \(line): \(message)"
     }
 
+    /// Localized error description matching ``description`` for CLI error reporters.
     public var errorDescription: String? {
         description
     }
 }
 
-/// Self-contained RFC-compatible `.env` parser supporting comments, `export` prefixes,
-/// single/double/unquoted values, multiline strings & PEM blocks, escape sequences,
-/// and `${VAR}` / `${VAR:-default}` / `${VAR-default}` variable expansion.
-public enum DotEnvParser {
-
-    /// Parses UTF-8 `.env` data into ordered entries with exact 1-based line numbers.
+/// Pure-Swift `.env` parser supporting comments, `export` prefixes, quoted and multiline strings,
+/// unquoted PEM blocks, escape sequences, and `${VAR}` / `${VAR:-default}` / `${VAR-default}` expansion.
+///
+/// ```swift
+/// let entries = try DotEnvParser.parse("""
+/// export API_HOST="api.example.com"
+/// API_URL="https://${API_HOST}/v1"
+/// """)
+/// ```
+public enum DotEnvParser: Sendable {
+    /// Parses UTF-8 `.env` bytes into ordered ``DotEnvEntry`` values with 1-based line numbers.
+    ///
+    /// - Parameters:
+    ///   - data: Raw UTF-8 `.env` file bytes.
+    ///   - environment: Process environment dictionary consulted first during `${...}` interpolation.
+    ///   - existingEntries: Previously parsed `.env` entries consulted second during `${...}` interpolation.
+    ///   - expandVariables: Whether `${VAR}`, `${VAR:-default}`, and `${VAR-default}` expressions are expanded.
+    ///   - strict: When `true`, lines without `=` or unexpected trailing characters after quotes throw ``DotEnvParseError``.
+    ///   - path: Optional file path attached to thrown ``DotEnvParseError`` diagnostics.
+    /// - Returns: Ordered ``DotEnvEntry`` items in file order.
+    /// - Throws: ``DotEnvParseError`` when the data is not valid UTF-8 or contains malformed `.env` syntax.
     public static func parse(
         data: Data,
         environment: [String: String] = [:],
@@ -70,15 +103,17 @@ public enum DotEnvParser {
         )
     }
 
-    /// Parses `.env` text into ordered entries with exact 1-based line numbers.
+    /// Parses `.env` text into ordered ``DotEnvEntry`` values with 1-based line numbers.
     ///
     /// - Parameters:
-    ///   - content: Raw `.env` file contents.
-    ///   - environment: Process environment dictionary (checked FIRST during `${...}` interpolation).
-    ///   - existingEntries: Previously parsed `.env` entries from earlier files (checked SECOND, updated as entries are parsed).
-    ///   - expandVariables: Whether to expand `${VAR}`, `${VAR:-default}`, and `${VAR-default}` in double-quoted and unquoted values.
-    ///   - strict: When `true`, lines without `=` or unexpected trailing tokens after closing quotes throw `DotEnvParseError`.
-    ///   - path: Optional file path attached to thrown `DotEnvParseError` values.
+    ///   - content: Raw `.env` text content.
+    ///   - environment: Process environment dictionary consulted first during `${...}` interpolation.
+    ///   - existingEntries: Previously parsed `.env` entries consulted second during `${...}` interpolation.
+    ///   - expandVariables: Whether `${VAR}`, `${VAR:-default}`, and `${VAR-default}` expressions are expanded.
+    ///   - strict: When `true`, lines without `=` or unexpected trailing characters after quotes throw ``DotEnvParseError``.
+    ///   - path: Optional file path attached to thrown ``DotEnvParseError`` diagnostics.
+    /// - Returns: Ordered ``DotEnvEntry`` items in file order.
+    /// - Throws: ``DotEnvParseError`` when malformed quotes, escapes, or interpolations are encountered.
     public static func parse(
         _ content: String,
         environment: [String: String] = [:],
@@ -515,7 +550,6 @@ public enum DotEnvParser {
         let chars = Array(line)
         for i in chars.indices {
             if chars[i] == "#", i > 0, (chars[i - 1] == " " || chars[i - 1] == "\t") {
-                // Only treat as inline comment if '#' is not escaped with '\'
                 return String(chars[0..<i])
             }
         }
@@ -530,7 +564,6 @@ public enum DotEnvParser {
         return result
     }
 
-    /// Parses `${VAR}`, `${VAR:-default}`, or `${VAR-default}` starting at `chars[index] == "{"`.
     private static func parseBracedInterpolation(
         chars: [Character],
         count: Int,
@@ -540,7 +573,6 @@ public enum DotEnvParser {
         path: String?,
         lookup: (String) -> String?
     ) throws -> String {
-        // Consume '{'
         index += 1
         var depth = 1
         var exprChars: [Character] = []
@@ -596,7 +628,6 @@ public enum DotEnvParser {
         path: String?,
         lookup: (String) -> String?
     ) throws -> String {
-        // Scan top-level for `:-` or `-` (outside nested `${...}`)
         let chars = Array(expr)
         var depth = 0
         var splitIndex: Int?
@@ -645,13 +676,11 @@ public enum DotEnvParser {
 
         if let rawDefault {
             if colonModifier {
-                // ${VAR:-default} -> use resolved when set AND non-empty
                 if let resolved, !resolved.isEmpty {
                     return resolved
                 }
                 return try expandUnquotedString(rawDefault, entryLine: entryLine, path: path, lookup: lookup)
             } else {
-                // ${VAR-default} -> use resolved when set (even if empty)
                 if let resolved {
                     return resolved
                 }

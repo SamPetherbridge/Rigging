@@ -1,12 +1,40 @@
 import Foundation
 
-/// Structured syntax or semantic error thrown while parsing a TOML v1.0 document.
+/// A syntax or semantic error encountered while parsing a TOML v1.0 document.
+///
+/// `TOMLParseError` captures the exact 1-based line and column where parsing failed,
+/// along with an optional source file path and a human-readable diagnostic reason.
+/// It conforms to both `CustomStringConvertible` and `LocalizedError` so command-line
+/// tools and structured loggers render crisp diagnostics automatically.
+///
+/// ```swift
+/// do {
+///     _ = try TOMLParser.parse("port = 007\n", path: "/repo/config.toml")
+/// } catch let error as TOMLParseError {
+///     print(error.localizedDescription)
+///     // TOML parse error in '/repo/config.toml' at 1:8: Leading zeros are not permitted...
+/// }
+/// ```
 public struct TOMLParseError: Error, Sendable, Equatable, Hashable, CustomStringConvertible, LocalizedError {
+    /// The file path associated with the TOML input, or `nil` when parsing an in-memory string.
     public let path: String?
+
+    /// The 1-based line number where the syntax or semantic error occurred.
     public let line: Int
+
+    /// The 1-based Unicode scalar column number where the error occurred.
     public let column: Int
+
+    /// A concise explanation of why the TOML input is invalid according to TOML v1.0.
     public let reason: String
 
+    /// Creates a structured TOML parse error at the specified source location.
+    ///
+    /// - Parameters:
+    ///   - path: Optional file path identifying the TOML document.
+    ///   - line: The 1-based line number of the error.
+    ///   - column: The 1-based column number of the error.
+    ///   - reason: A human-readable explanation of the syntax or semantic violation.
     public init(path: String? = nil, line: Int, column: Int, reason: String) {
         self.path = path
         self.line = line
@@ -14,6 +42,7 @@ public struct TOMLParseError: Error, Sendable, Equatable, Hashable, CustomString
         self.reason = reason
     }
 
+    /// A formatted diagnostic string including the optional file path, line, column, and reason.
     public var description: String {
         if let path, !path.isEmpty {
             return "TOML parse error in '\(path)' at \(line):\(column): \(reason)"
@@ -21,24 +50,113 @@ public struct TOMLParseError: Error, Sendable, Equatable, Hashable, CustomString
         return "TOML parse error at \(line):\(column): \(reason)"
     }
 
+    /// A localized message describing what error occurred, matching ``description``.
     public var errorDescription: String? {
         description
     }
 }
 
-/// Typed value representation of a parsed TOML v1.0 node.
+/// A typed value node in a parsed TOML v1.0 document.
+///
+/// `TOMLValue` preserves all seven TOML v1.0 data types without lossy intermediate
+/// conversion, including 64-bit signed integers, IEEE 754 floating-point values
+/// (`inf`, `-inf`, and `nan`), normalized RFC 3339 date/time literals, arrays, and nested tables.
+///
+/// ```swift
+/// let document = try TOMLParser.parse("""
+/// [database]
+/// host = "db.internal"
+/// port = 5432
+/// tls = true
+/// """)
+/// let host = document["database"]?["host"]?.stringValue // "db.internal"
+/// ```
 public enum TOMLValue: Sendable {
+    /// A UTF-8 string decoded from a basic, multiline basic, literal, or multiline literal TOML string.
     case string(String)
+
+    /// A 64-bit signed integer decoded from a decimal, hexadecimal (`0x`), octal (`0o`), or binary (`0b`) literal.
     case int(Int64)
+
+    /// A double-precision IEEE 754 floating-point number, including `inf`, `-inf`, and `nan`.
     case float(Double)
+
+    /// A boolean value (`true` or `false`).
     case bool(Bool)
-    /// Normalized RFC 3339 / ISO-8601 date, time, or datetime literal.
+
+    /// A normalized RFC 3339 / ISO 8601 offset date-time, local date-time, local date, or local time literal.
     case datetime(String)
+
+    /// An ordered array of ``TOMLValue`` elements, including arrays of tables (`[[...]]`).
     case array([TOMLValue])
+
+    /// A key-value TOML table mapping `String` keys to nested ``TOMLValue`` nodes.
     case table([String: TOMLValue])
+
+    /// The underlying string when this node is ``string(_:)``, or `nil` otherwise.
+    public var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    /// The underlying 64-bit integer when this node is ``int(_:)``, or `nil` otherwise.
+    public var intValue: Int64? {
+        if case .int(let value) = self { return value }
+        return nil
+    }
+
+    /// The underlying floating-point value when this node is ``float(_:)``, or `nil` otherwise.
+    public var floatValue: Double? {
+        if case .float(let value) = self { return value }
+        return nil
+    }
+
+    /// The underlying boolean value when this node is ``bool(_:)``, or `nil` otherwise.
+    public var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    /// The normalized RFC 3339 / ISO 8601 string when this node is ``datetime(_:)``, or `nil` otherwise.
+    public var datetimeValue: String? {
+        if case .datetime(let value) = self { return value }
+        return nil
+    }
+
+    /// The underlying array elements when this node is ``array(_:)``, or `nil` otherwise.
+    public var arrayValue: [TOMLValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+
+    /// The underlying key-value dictionary when this node is ``table(_:)``, or `nil` otherwise.
+    public var tableValue: [String: TOMLValue]? {
+        if case .table(let value) = self { return value }
+        return nil
+    }
+
+    /// Accesses the nested value for `key` when this node is ``table(_:)``, returning `nil` otherwise.
+    ///
+    /// - Parameter key: The table key to look up.
+    /// - Returns: The nested ``TOMLValue`` for `key`, or `nil` if this node is not a table or the key is absent.
+    public subscript(key: String) -> TOMLValue? {
+        if case .table(let dict) = self {
+            return dict[key]
+        }
+        return nil
+    }
 }
 
 extension TOMLValue: Equatable {
+    /// Returns a boolean value indicating whether two ``TOMLValue`` instances represent identical TOML values.
+    ///
+    /// Floating-point `NaN` payloads compare equal (`TOMLValue.float(.nan) == TOMLValue.float(.nan)`)
+    /// so parsed documents with `nan` literals behave deterministically in tests and collections.
+    ///
+    /// - Parameters:
+    ///   - lhs: A TOML value to compare.
+    ///   - rhs: Another TOML value to compare.
+    /// - Returns: `true` if both values have the same case and equal payloads; otherwise, `false`.
     public static func == (lhs: TOMLValue, rhs: TOMLValue) -> Bool {
         switch (lhs, rhs) {
         case (.string(let a), .string(let b)):
@@ -63,6 +181,12 @@ extension TOMLValue: Equatable {
 }
 
 extension TOMLValue: Hashable {
+    /// Hashes the essential components of this TOML value by feeding them into the given hasher.
+    ///
+    /// Consistent with ``==(_:_:)``, all `NaN` float values hash to the same canonical bit pattern
+    /// and signed zeros (`-0.0` and `+0.0`) produce identical hashes.
+    ///
+    /// - Parameter hasher: The hasher to use when combining the components of this instance.
     public func hash(into hasher: inout Hasher) {
         switch self {
         case .string(let s):
@@ -96,9 +220,31 @@ extension TOMLValue: Hashable {
     }
 }
 
-/// Pure-Swift, zero-dependency RFC-compliant TOML v1.0 parser.
-public enum TOMLParser {
-    /// Parses UTF-8 TOML data into a root dictionary of `TOMLValue` nodes.
+/// Pure-Swift, zero-dependency parser for TOML v1.0 documents.
+///
+/// `TOMLParser` implements the full TOML v1.0.0 specification in pure Swift without external C or
+/// Swift dependencies, supporting bare/quoted/dotted keys, basic and literal single-line and
+/// multiline strings, decimal/hex/octal/binary 64-bit integers, IEEE 754 floats (`inf`, `nan`),
+/// RFC 3339 date-times/dates/times, inline tables, standard tables (`[section]`), and arrays of
+/// tables (`[[items]]`).
+///
+/// ```swift
+/// let root = try TOMLParser.parse("""
+/// title = "Rigging Service"
+/// port = 8_443
+///
+/// [signing]
+/// teamId = "TEAM123456"
+/// """)
+/// ```
+public enum TOMLParser: Sendable {
+    /// Parses UTF-8 encoded TOML v1.0 data into a root table dictionary.
+    ///
+    /// - Parameters:
+    ///   - data: Raw UTF-8 bytes of the TOML document (an optional leading UTF-8 BOM is stripped automatically).
+    ///   - path: Optional file path attached to thrown ``TOMLParseError`` diagnostics.
+    /// - Returns: A dictionary representing the top-level TOML table.
+    /// - Throws: ``TOMLParseError`` if `data` is not valid UTF-8 or violates TOML v1.0 syntax or table rules.
     public static func parse(data: Data, path: String? = nil) throws -> [String: TOMLValue] {
         guard let text = String(data: data, encoding: .utf8) else {
             throw TOMLParseError(
@@ -111,7 +257,13 @@ public enum TOMLParser {
         return try parse(text, path: path)
     }
 
-    /// Parses a TOML v1.0 string into a root dictionary of `TOMLValue` nodes.
+    /// Parses a TOML v1.0 document string into a root table dictionary.
+    ///
+    /// - Parameters:
+    ///   - text: The TOML v1.0 document text.
+    ///   - path: Optional file path attached to thrown ``TOMLParseError`` diagnostics.
+    /// - Returns: A dictionary representing the top-level TOML table.
+    /// - Throws: ``TOMLParseError`` if the document contains syntax errors, duplicate keys, or invalid table redefinitions.
     public static func parse(_ text: String, path: String? = nil) throws -> [String: TOMLValue] {
         var engine = ParserEngine(text: text, path: path)
         return try engine.parseDocument()

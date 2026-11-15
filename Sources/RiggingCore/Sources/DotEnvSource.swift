@@ -1,19 +1,38 @@
 import Foundation
 
-/// Loads configuration values from one or more `.env` files in order (`configuration.dotEnvFiles`),
-/// where later files override earlier files while preserving overridden `.dotEnv` origins.
+/// Loads configuration values from one or more `.env` files in sequential order.
+///
+/// Later files in ``files`` (or ``SettingsConfiguration/dotEnvFiles``) override values defined in
+/// earlier files while preserving displaced ``SettingOrigin/dotEnv(path:line:variable:)`` line
+/// provenance in ``RawNode/overriddenOrigins``. Variable interpolation (`${VAR}`, `${VAR:-default}`)
+/// resolves against ``SettingsContext/environment`` first and earlier `.env` entries second.
+///
+/// ```swift
+/// let source = DotEnvSource(files: [".env", ".env.local"])
+/// ```
 public struct DotEnvSource: SettingsSource, Sendable {
-    /// Optional explicit list of `.env` file paths overriding `configuration.dotEnvFiles`.
+    /// Optional explicit `.env` file paths overriding ``SettingsConfiguration/dotEnvFiles``.
     public let files: [String]?
+
     /// Whether `${VAR}`, `${VAR:-default}`, and `${VAR-default}` expressions are expanded.
     public let expandVariables: Bool
-    /// Whether syntax errors in `.env` lines without `=` throw `DotEnvParseError`.
+
+    /// Whether lines without `=` or unexpected trailing characters throw ``DotEnvParseError``.
     public let strictSyntax: Bool
-    /// Whether missing `.env` files throw an error instead of being silently skipped.
+
+    /// Whether missing `.env` files throw a file-not-found error instead of being skipped.
     public let requireFiles: Bool
 
+    /// Human-readable name identifying this source in diagnostics (`"DotEnvSource"`).
     public var sourceName: String { "DotEnvSource" }
 
+    /// Creates a `.env` file configuration source.
+    ///
+    /// - Parameters:
+    ///   - files: Optional explicit list of `.env` paths overriding ``SettingsConfiguration/dotEnvFiles``.
+    ///   - expandVariables: Whether `${...}` variable interpolation is enabled.
+    ///   - strictSyntax: Whether malformed lines without `=` throw ``DotEnvParseError``.
+    ///   - requireFiles: Whether missing `.env` files throw an error rather than being ignored.
     public init(
         files: [String]? = nil,
         expandVariables: Bool = true,
@@ -26,6 +45,14 @@ public struct DotEnvSource: SettingsSource, Sendable {
         self.requireFiles = requireFiles
     }
 
+    /// Reads and parses configured `.env` files into a ``RawConfigTree`` with 1-based line provenance.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration controlling `dotEnvFiles`, prefixes, and delimiters.
+    ///   - context: Execution context providing filesystem, working directory, and environment access.
+    /// - Returns: A ``RawConfigTree`` tagged with ``SettingOrigin/dotEnv(path:line:variable:)`` provenance.
+    /// - Throws: ``DotEnvParseError`` when a `.env` file contains invalid syntax, or `CocoaError` when
+    ///   ``requireFiles`` is `true` and a configured file does not exist.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext

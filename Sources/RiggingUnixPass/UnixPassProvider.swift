@@ -9,6 +9,7 @@ import RiggingCore
 /// - `#line:<N>`: returns 1-based line `N` (e.g. `pass://prod/db#line:2`).
 /// - `#<key>`: extracts metadata value from `key: value` lines (e.g. `pass://prod/db#username`).
 public struct UnixPassProvider: SecretProvider, Sendable {
+    /// URI schemes resolved by this provider (`["pass"]`).
     public let supportedSchemes: Set<String> = ["pass"]
 
     /// Optional explicit absolute path to the `pass` CLI binary.
@@ -26,6 +27,14 @@ public struct UnixPassProvider: SecretProvider, Sendable {
     /// Subprocess execution timeout per CLI call.
     public let timeout: Duration?
 
+    /// Creates a Unix `pass` secret provider (`pass://<entry-path>[#fragment]`).
+    ///
+    /// - Parameters:
+    ///   - executablePath: Optional explicit absolute path to a trusted `pass` executable.
+    ///   - storeDirectory: Optional `PASSWORD_STORE_DIR` override directory.
+    ///   - fullEntryByDefault: Whether fragment-less `pass://` URIs return the full decrypted file rather than line 1. Defaults to `false`.
+    ///   - searchDirectories: Trusted absolute system directories searched when `executablePath` is `nil`.
+    ///   - timeout: Maximum execution duration per `pass` invocation. Defaults to 30 seconds.
     public init(
         executablePath: String? = nil,
         storeDirectory: String? = nil,
@@ -45,6 +54,13 @@ public struct UnixPassProvider: SecretProvider, Sendable {
         self.timeout = timeout
     }
 
+    /// Resolves a batch of `pass://` references, deduplicating `pass show` calls when multiple fragments target the same entry.
+    ///
+    /// - Parameters:
+    ///   - references: The `SecretReference` items to resolve. Non-`pass://` items are ignored.
+    ///   - context: Active `SettingsContext` supplying environment variables, filesystem, subprocess runner, and redactor.
+    /// - Returns: A dictionary mapping each resolved `SecretReference` to its extracted UTF-8 secret `Data`.
+    /// - Throws: `SecretResolutionError` or `SecretBatchPartialFailureError` if GPG decryption, binary verification, or fragment lookup fails.
     public func resolveBatch(
         _ references: [SecretReference],
         context: SettingsContext
@@ -403,7 +419,14 @@ public struct UnixPassProvider: SecretProvider, Sendable {
 }
 
 extension SecretProvider where Self == UnixPassProvider {
-    /// Unix `pass` (`~/.password-store`) secret provider (`pass://<entry-path>[#fragment]`).
+    /// Creates a Unix `pass` (`~/.password-store`) secret provider (`pass://<entry-path>[#fragment]`).
+    ///
+    /// - Parameters:
+    ///   - executablePath: Optional explicit absolute path to a trusted `pass` binary.
+    ///   - storeDirectory: Optional `PASSWORD_STORE_DIR` override path.
+    ///   - fullEntryByDefault: When `true`, fragment-less references return the full entry instead of line 1.
+    ///   - timeout: Maximum execution duration per CLI invocation. Defaults to 30 seconds.
+    /// - Returns: A configured ``UnixPassProvider``.
     public static func unixPass(
         executablePath: String? = nil,
         storeDirectory: String? = nil,

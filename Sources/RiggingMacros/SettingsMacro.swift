@@ -25,6 +25,14 @@ public struct SettingsMacro: MemberMacro, ExtensionMacro {
 
     // MARK: - MemberMacro
 
+    /// Synthesizes `$field` provenance accessors, initializers, schema descriptors, two-phase secret batching, and `load` methods on a `@Settings` or `@Rigged` struct.
+    ///
+    /// - Parameters:
+    ///   - node: The `@Settings` or `@Rigged` attribute syntax node.
+    ///   - declaration: The target declaration group (validated to be a `struct`).
+    ///   - protocols: Protocol types requested for conformance synthesis.
+    ///   - context: The macro expansion context used for emitting diagnostics.
+    /// - Returns: The synthesized member declarations matching the target struct's access level.
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
@@ -159,6 +167,15 @@ public struct SettingsMacro: MemberMacro, ExtensionMacro {
 
     // MARK: - ExtensionMacro
 
+    /// Synthesizes `RiggedSettings`, `RiggedNestedSettings`, and `Sendable` protocol conformances not already declared on the struct.
+    ///
+    /// - Parameters:
+    ///   - node: The `@Settings` or `@Rigged` attribute syntax node.
+    ///   - declaration: The target declaration group.
+    ///   - type: The nominal type syntax being extended.
+    ///   - protocols: Protocol types requested for conformance synthesis.
+    ///   - context: The macro expansion context.
+    /// - Returns: An extension declaration adding any non-redundant conformances.
     public static func expansion(
         of node: AttributeSyntax,
         attachedTo declaration: some DeclGroupSyntax,

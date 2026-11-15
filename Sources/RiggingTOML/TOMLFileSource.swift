@@ -1,24 +1,55 @@
 import Foundation
 import RiggingCore
 
-/// Origin classification for TOML-backed configuration files.
+/// Classifies the provenance category assigned to settings loaded from a TOML configuration file.
+///
+/// The chosen origin style controls both human-readable provenance output and security enforcement:
+/// literal `@SecretSetting` values originating from ``projectConfig`` trigger Rigging's
+/// repo-committed plaintext guard (exit code `4`) unless explicitly opted in.
 public enum TOMLSourceOriginStyle: Sendable, Equatable, Hashable {
+    /// Marks loaded keys with `SettingOrigin.projectConfig(path:keyPath:profile:)`.
     case projectConfig
+
+    /// Marks loaded keys with `SettingOrigin.userConfig(path:keyPath:profile:)`.
     case userConfig
+
+    /// Marks loaded keys with `SettingOrigin.customSource(name:detail:)` using `sourceName`.
     case custom(sourceName: String)
 }
 
-/// Alias matching `pydantic-settings` parity naming (`TOMLFileSettingsSource`).
+/// Type alias matching `pydantic-settings` naming conventions for ``TOMLFileSource``.
 public typealias TOMLFileSettingsSource = TOMLFileSource
 
-/// Loads one or more TOML v1.0 configuration files into a `RawConfigTree`, stripping `"$schema"`
-/// and `"profiles"` metadata keys and applying named profile overlays when active.
+/// Loads configuration values from one or more explicit TOML v1.0 files into a `RawConfigTree`.
+///
+/// `TOMLFileSource` parses each file using ``TOMLParser``, strips reserved `"$schema"` and
+/// `"profiles"` root metadata keys, and overlays `[profiles.<active>]` when an active profile is
+/// selected via `profile`, `--profile`, `<ENV_PREFIX>PROFILE`, or `SettingsConfiguration.profile`.
+/// When multiple paths are supplied, later files in ``paths`` override earlier files.
+///
+/// ```swift
+/// static func customizeSources(_ defaults: DefaultSources) -> [any SettingsSource] {
+///     [
+///         defaults.initOverrides,
+///         defaults.environment,
+///         TOMLFileSource(path: "/etc/myapp/config.toml", optional: true),
+///     ]
+/// }
+/// ```
 public struct TOMLFileSource: SettingsSource, Sendable {
+    /// Ordered list of file paths to load, where later paths override earlier paths.
     public let paths: [String]
+
+    /// Whether missing files are silently ignored (`true`) or throw a file-not-found error (`false`).
     public let optional: Bool
+
+    /// An explicit profile name overriding `--profile`, `<ENV_PREFIX>PROFILE`, and `SettingsConfiguration.profile`.
     public let profile: String?
+
+    /// The provenance classification applied to every key loaded by this source.
     public let originStyle: TOMLSourceOriginStyle
 
+    /// The human-readable name of this configuration source.
     public var sourceName: String {
         switch originStyle {
         case .projectConfig:
@@ -30,6 +61,13 @@ public struct TOMLFileSource: SettingsSource, Sendable {
         }
     }
 
+    /// Creates a TOML file source backed by a single file path.
+    ///
+    /// - Parameters:
+    ///   - path: Absolute, `~`-prefixed, or working-directory-relative path to the TOML file.
+    ///   - optional: When `true` (the default), missing files yield an empty tree without throwing.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - originStyle: Provenance classification assigned to loaded keys.
     public init(
         path: String,
         optional: Bool = true,
@@ -42,6 +80,13 @@ public struct TOMLFileSource: SettingsSource, Sendable {
         self.originStyle = originStyle
     }
 
+    /// Creates a TOML file source backed by an ordered list of file paths.
+    ///
+    /// - Parameters:
+    ///   - paths: Ordered TOML file paths; later files override earlier files.
+    ///   - optional: When `true` (the default), missing files are skipped without throwing.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - originStyle: Provenance classification assigned to loaded keys.
     public init(
         paths: [String],
         optional: Bool = true,
@@ -54,6 +99,13 @@ public struct TOMLFileSource: SettingsSource, Sendable {
         self.originStyle = originStyle
     }
 
+    /// Loads and merges all configured TOML files against `configuration` and `context`.
+    ///
+    /// - Parameters:
+    ///   - configuration: Model-level settings configuration controlling case sensitivity and profile defaults.
+    ///   - context: Execution context providing the filesystem, working directory, home directory, and CLI/env state.
+    /// - Returns: A merged `RawConfigTree` annotated with per-key provenance.
+    /// - Throws: `CocoaError(.fileNoSuchFile)` when `optional` is `false` and a path is missing, or `ConfigFileParseError` on invalid TOML.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -102,19 +154,45 @@ public struct TOMLFileSource: SettingsSource, Sendable {
     }
 }
 
-/// Discovers TOML project configuration files (e.g. `".asc.toml"`, `"config.toml"`) by walking
-/// upward from `context.workingDirectory` until reaching a `.git` directory/file boundary
-/// (inclusive of the repository root) or `context.homeDirectory` (never walking above `$HOME`).
+/// Discovers project-scoped TOML configuration files by walking upward from the working directory
+/// to the nearest `.git` repository root or user home directory boundary.
+///
+/// `TOMLProjectConfigSource` mirrors `ProjectConfigSource` for TOML files (such as `".myapp.toml"`
+/// or `"config.toml"`), stopping inclusively at any directory containing a `.git` directory or
+/// git-worktree file and never walking above `context.homeDirectory`. Nearer directories take
+/// precedence over ancestor directories, and keys are tagged with `.projectConfig` provenance so
+/// repo-committed literal secrets are rejected with exit code `4`.
+///
+/// ```swift
+/// static func customizeSources(_ defaults: DefaultSources) -> [any SettingsSource] {
+///     [
+///         defaults.initOverrides,
+///         defaults.environment,
+///         defaults.dotEnv,
+///         TOMLProjectConfigSource(),
+///         TOMLUserConfigSource(),
+///     ]
+/// }
+/// ```
 public struct TOMLProjectConfigSource: SettingsSource, Sendable {
     /// Optional explicit filenames overriding `configuration.projectConfigFiles`.
     public let fileNames: [String]?
-    /// Optional explicit profile overriding `configuration.profile` / `<ENV_PREFIX>PROFILE`.
+
+    /// Optional explicit profile overriding `configuration.profile` and `<ENV_PREFIX>PROFILE`.
     public let profile: String?
-    /// When `true`, stops upward search at the nearest directory containing a matching config file.
+
+    /// Whether upward directory traversal stops at the nearest directory containing a matching TOML file.
     public let stopAtFirstFound: Bool
 
+    /// The canonical source identifier (`"TOMLProjectConfigSource"`).
     public var sourceName: String { "TOMLProjectConfigSource" }
 
+    /// Creates a project TOML configuration source searching for `fileNames` (or `configuration.projectConfigFiles` when `nil`).
+    ///
+    /// - Parameters:
+    ///   - fileNames: Optional explicit candidate filenames per directory; later names override earlier names.
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - stopAtFirstFound: When `true`, stops walking upward after the nearest directory containing a match.
     public init(
         fileNames: [String]? = nil,
         profile: String? = nil,
@@ -125,6 +203,12 @@ public struct TOMLProjectConfigSource: SettingsSource, Sendable {
         self.stopAtFirstFound = stopAtFirstFound
     }
 
+    /// Creates a project TOML configuration source searching for a single filename.
+    ///
+    /// - Parameters:
+    ///   - fileName: Candidate TOML filename to search for (for example, `".myapp.toml"`).
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - stopAtFirstFound: When `true`, stops walking upward after the nearest directory containing `fileName`.
     public init(
         fileName: String,
         profile: String? = nil,
@@ -135,6 +219,13 @@ public struct TOMLProjectConfigSource: SettingsSource, Sendable {
         self.stopAtFirstFound = stopAtFirstFound
     }
 
+    /// Discovers, parses, and merges project TOML configuration files from the directory hierarchy.
+    ///
+    /// - Parameters:
+    ///   - configuration: Model-level settings configuration providing candidate filenames and case sensitivity.
+    ///   - context: Execution context providing working/home directories, environment, and filesystem access.
+    /// - Returns: A merged `RawConfigTree` with `.projectConfig` provenance on every entry.
+    /// - Throws: `ConfigFileParseError` if any discovered TOML file fails to parse.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -243,17 +334,36 @@ public struct TOMLProjectConfigSource: SettingsSource, Sendable {
     }
 }
 
-/// Loads user-scoped TOML configuration from `$XDG_CONFIG_HOME/<xdgAppName>/config.toml`
-/// (or `<homeDirectory>/.config/<xdgAppName>/config.toml`), with optional macOS fallback to
-/// `<homeDirectory>/Library/Application Support/<xdgAppName>/config.toml`.
+/// Loads user-scoped TOML configuration from the XDG Base Directory Specification path
+/// (`$XDG_CONFIG_HOME/<app>/config.toml` or `~/.config/<app>/config.toml`) with optional
+/// macOS Application Support fallback.
+///
+/// When both `~/Library/Application Support/<app>/config.toml` and `~/.config/<app>/config.toml`
+/// exist, the XDG config file takes precedence over the Application Support fallback while deep-merging
+/// non-overlapping nested tables.
 public struct TOMLUserConfigSource: SettingsSource, Sendable {
+    /// Optional explicit application subdirectory name overriding `configuration.xdgAppName`.
     public let appName: String?
+
+    /// The TOML filename looked up inside each user configuration directory (defaults to `"config.toml"`).
     public let fileName: String
+
+    /// Optional explicit profile overriding `configuration.profile` and `<ENV_PREFIX>PROFILE`.
     public let profile: String?
+
+    /// Whether `<homeDirectory>/Library/Application Support/<app>/<fileName>` is checked as a lower-priority fallback.
     public let includeApplicationSupportFallback: Bool
 
+    /// The canonical source identifier (`"TOMLUserConfigSource"`).
     public var sourceName: String { "TOMLUserConfigSource" }
 
+    /// Creates a user-scoped TOML configuration source.
+    ///
+    /// - Parameters:
+    ///   - appName: Optional explicit application folder name overriding `configuration.xdgAppName`.
+    ///   - fileName: Filename inside the user config directory (defaults to `"config.toml"`).
+    ///   - profile: Optional explicit profile overlay name.
+    ///   - includeApplicationSupportFallback: When `true` (the default), checks `~/Library/Application Support/<app>/<fileName>` beneath XDG.
     public init(
         appName: String? = nil,
         fileName: String = "config.toml",
@@ -266,6 +376,13 @@ public struct TOMLUserConfigSource: SettingsSource, Sendable {
         self.includeApplicationSupportFallback = includeApplicationSupportFallback
     }
 
+    /// Loads user-scoped TOML configuration files and applies any active profile overlay.
+    ///
+    /// - Parameters:
+    ///   - configuration: Model-level settings configuration providing `xdgAppName`, `profile`, and `caseSensitive`.
+    ///   - context: Execution context providing environment variables, home directory, and filesystem access.
+    /// - Returns: A merged `RawConfigTree` with `.userConfig` provenance, or `.empty` when `xdgAppName` is unset.
+    /// - Throws: `ConfigFileParseError` if a present user TOML configuration file contains invalid syntax.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext

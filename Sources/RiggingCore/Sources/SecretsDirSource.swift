@@ -1,22 +1,42 @@
 import Foundation
 
-/// Reads mounted secret files from `configuration.secretsDirectory` (such as Docker/Kubernetes
-/// `/run/secrets`), skipping dotfiles, optionally recursing into subdirectories, and trimming
-/// a single trailing newline when `trimSecretTrailingNewline` is enabled.
+/// Loads mounted secret files from a directory such as `/run/secrets` in Docker or Kubernetes pods.
+///
+/// Hidden dotfiles (including `.DS_Store` and Kubernetes `..data` symlink directories) are ignored
+/// automatically. When ``SettingsConfiguration/trimSecretTrailingNewline`` is enabled, a single
+/// trailing `\n` or `\r\n` added by tools or volume mounts is stripped while preserving multiline
+/// PEM or certificate content.
+///
+/// ```swift
+/// let source = SecretsDirSource(directory: "/run/secrets")
+/// ```
 public struct SecretsDirSource: SettingsSource, Sendable {
-    /// Optional explicit directory path overriding `configuration.secretsDirectory`.
+    /// Optional explicit directory path overriding ``SettingsConfiguration/secretsDirectory``.
     public let directory: String?
-    /// When `true`, only filenames beginning with `configuration.envPrefix` are loaded.
-    /// Defaults to `false` so both prefixed (`ASC_API_KEY`) and unprefixed (`api_key`) secret files work.
+
+    /// When `true`, only files whose names begin with ``SettingsConfiguration/envPrefix`` are loaded.
     public let requireEnvPrefix: Bool
 
+    /// Human-readable name identifying this source in diagnostics (`"SecretsDirSource"`).
     public var sourceName: String { "SecretsDirSource" }
 
+    /// Creates a mounted secrets-directory configuration source.
+    ///
+    /// - Parameters:
+    ///   - directory: Optional explicit path overriding ``SettingsConfiguration/secretsDirectory``.
+    ///   - requireEnvPrefix: Whether filenames without ``SettingsConfiguration/envPrefix`` are ignored.
     public init(directory: String? = nil, requireEnvPrefix: Bool = false) {
         self.directory = directory
         self.requireEnvPrefix = requireEnvPrefix
     }
 
+    /// Scans the secrets directory and maps file contents into a ``RawConfigTree``.
+    ///
+    /// - Parameters:
+    ///   - configuration: Settings configuration controlling `secretsDirectory`, `secretsNestedSubdir`,
+    ///     and `trimSecretTrailingNewline`.
+    ///   - context: Execution context providing filesystem and path resolution context.
+    /// - Returns: A ``RawConfigTree`` tagged with ``SettingOrigin/secretsDirectory(path:)`` provenance.
     public func load(
         configuration: SettingsConfiguration,
         context: SettingsContext
@@ -162,11 +182,8 @@ public struct SecretsDirSource: SettingsSource, Sendable {
         }
     }
 
-    /// Trims at most one trailing `\r\n` or `\n` sequence, preserving intentional internal
-    /// or additional trailing newlines.
     static func trimSingleTrailingNewline(_ value: String) -> String {
         if value.hasSuffix("\r\n") {
-            // Note: in Swift String, "\r\n" is a single extended grapheme cluster Character.
             return String(value.dropLast())
         }
         if value.hasSuffix("\n") {
