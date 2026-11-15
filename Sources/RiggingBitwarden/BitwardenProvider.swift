@@ -190,14 +190,18 @@ public struct BitwardenProvider: SecretProvider, Sendable {
                     if let cached = itemCache[entry.ref.itemID] {
                         itemResult = cached
                     } else {
-                        let fetched = await Result {
-                            try await fetchVaultItem(
+                        let fetched: Result<VaultItemPayload, any Error>
+                        do {
+                            let payload = try await fetchVaultItem(
                                 itemID: entry.ref.itemID,
                                 reference: entry.reference,
                                 executablePath: resolvedBwPath,
                                 environment: childEnvironment,
                                 context: context
                             )
+                            fetched = .success(payload)
+                        } catch {
+                            fetched = .failure(error)
                         }
                         itemCache[entry.ref.itemID] = fetched
                         itemResult = fetched

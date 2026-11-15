@@ -120,8 +120,9 @@ public struct SOPSProvider: SecretProvider, Sendable {
             if let cached = decryptedCache[cacheKey] {
                 decryptedResult = cached
             } else {
-                let fetched = await Result {
-                    try await decryptFile(
+                let fetched: Result<Data, any Error>
+                do {
+                    let data = try await decryptFile(
                         resolvedPath: entry.resolvedPath,
                         rawMode: rawMode,
                         reference: entry.reference,
@@ -129,6 +130,9 @@ public struct SOPSProvider: SecretProvider, Sendable {
                         environment: childEnvironment,
                         context: context
                     )
+                    fetched = .success(data)
+                } catch {
+                    fetched = .failure(error)
                 }
                 decryptedCache[cacheKey] = fetched
                 decryptedResult = fetched
