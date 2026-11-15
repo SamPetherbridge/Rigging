@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-11-15
+## [0.1.0] - 2026-11-16
 
 ### Added
 
@@ -34,3 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `RiggingTesting`: Hermetic `SettingsContext.inMemory(...)`, `InMemoryFileSystem`, `MockOnePasswordProvider`, `MockKeychainProvider`, `MockSubprocessRunner`, and `TestFixtures`.
 - **Documentation & Tooling:**
   - Multi-module Apple DocC catalogs across all 11 library products with Swift Package Index (`.spi.yml`) configuration and `swift-docc-plugin` integration.
+
+[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/SamPetherbridge/Rigging/releases/tag/0.1.0
