@@ -14,6 +14,34 @@ struct SecretResolutionTests {
         #expect(op.scheme == "op")
         #expect(op.accountHint == "work")
         #expect(op.redactedDescription == "op://Engineering/ASC Key/Credentials/private_key")
+        if case .onePassword(let opInner) = op {
+            #expect(opInner.opReadURI == "op://Engineering/ASC Key/Credentials/private_key")
+        } else {
+            Issue.record("Expected .onePassword case")
+        }
+
+        let opSpaces = try SecretReference.parse("op://Example Vault/Example Item/Example Section/credential field?account=team&ssh-format=openssh")
+        if case .onePassword(let opSpacesInner) = opSpaces {
+            #expect(opSpacesInner.opReadURI == "op://Example Vault/Example Item/Example Section/credential field?ssh-format=openssh")
+        } else {
+            Issue.record("Expected .onePassword case")
+        }
+
+        // Unsupported delimiter / template-injection characters in op:// segments and forwarded query items
+        for unsupportedOpURI in [
+            "op://Vault/Item%2FSlash/field",
+            "op://Vault/Item%25Percent/field",
+            "op://Vault/Item%3FQuery/field",
+            "op://Vault/Item%23Hash/field",
+            "op://Vault/Item/field}}",
+            "op://Vault/Item/{{field",
+            "op://Vault/Item/field?ssh-format=open%20ssh",
+            "op://Vault/Item/field?ssh-format=a%26b",
+        ] {
+            #expect(throws: SecretReferenceError.self) {
+                _ = try SecretReference.parse(unsupportedOpURI)
+            }
+        }
 
         let kc = try SecretReference.parse("keychain://com.example.asc/default?accessGroup=TEAM.group&synchronizable=true")
         #expect(kc.scheme == "keychain")

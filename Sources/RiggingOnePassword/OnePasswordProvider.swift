@@ -621,7 +621,7 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
                 if let cached = itemsListCache[matchedVault.id] {
                     vaultItems = cached
                 } else {
-                    let encodedVaultID = Self.encodePathSegment(matchedVault.id)
+                    let encodedVaultID = Self.encodeHTTPPathSegment(matchedVault.id)
                     let listData = try await sendConnectRequest(
                         path: "/v1/vaults/\(encodedVaultID)/items",
                         connect: connect,
@@ -660,8 +660,8 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
                     fullItemCache[fullItemKey] = summaryItem
                     fullItem = summaryItem
                 } else {
-                    let encodedVaultID = Self.encodePathSegment(matchedVault.id)
-                    let encodedItemID = Self.encodePathSegment(summaryItem.id)
+                    let encodedVaultID = Self.encodeHTTPPathSegment(matchedVault.id)
+                    let encodedItemID = Self.encodeHTTPPathSegment(summaryItem.id)
                     let detailData = try await sendConnectRequest(
                         path: "/v1/vaults/\(encodedVaultID)/items/\(encodedItemID)",
                         connect: connect,
@@ -695,9 +695,9 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
                     if let explicitContentPath = file.content_path, explicitContentPath.hasPrefix("/") {
                         contentPath = explicitContentPath
                     } else {
-                        let vID = Self.encodePathSegment(matchedVault.id)
-                        let iID = Self.encodePathSegment(fullItem.id)
-                        let fID = Self.encodePathSegment(file.id)
+                        let vID = Self.encodeHTTPPathSegment(matchedVault.id)
+                        let iID = Self.encodeHTTPPathSegment(fullItem.id)
+                        let fID = Self.encodeHTTPPathSegment(file.id)
                         contentPath = "/v1/vaults/\(vID)/items/\(iID)/files/\(fID)/content"
                     }
                     secretBytes = try await sendConnectRequest(
@@ -900,7 +900,9 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         return nil
     }
 
-    private static func encodePathSegment(_ value: String) -> String {
+    /// Percent-encodes a single URL path segment for 1Password Connect HTTP REST requests.
+    /// Kept separate from CLI `op://` reference formatting, which preserves literal spaces.
+    private static func encodeHTTPPathSegment(_ value: String) -> String {
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/?#")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
@@ -923,15 +925,42 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         return .standard
     }
 
+    private static let forbiddenCLISegmentCharacters: Set<Character> = ["/", "?", "#", "%", "{", "}"]
+    private static let forbiddenCLIQueryCharacters: Set<Character> = ["&", "=", "?", "#", "%", "{", "}", " "]
+
     private static func validateOnePasswordReference(_ opRef: OnePasswordSecretReference) throws {
-        try validateSafeCLIValue(opRef.vault, label: "vault")
-        try validateSafeCLIValue(opRef.item, label: "item")
+        try validateSafeCLISegment(opRef.vault, label: "vault")
+        try validateSafeCLISegment(opRef.item, label: "item")
         if let section = opRef.section {
-            try validateSafeCLIValue(section, label: "section")
+            try validateSafeCLISegment(section, label: "section")
         }
-        try validateSafeCLIValue(opRef.field, label: "field")
+        try validateSafeCLISegment(opRef.field, label: "field")
         if let accountHint = opRef.accountHint {
             try validateSafeCLIValue(accountHint, label: "account")
+        }
+        for item in opRef.queryItems where item.name != "account" {
+            try validateSafeCLIQueryComponent(item.name, label: "query name")
+            if let value = item.value {
+                try validateSafeCLIQueryComponent(value, label: "query value")
+            }
+        }
+    }
+
+    private static func validateSafeCLISegment(_ value: String, label: String) throws {
+        try validateSafeCLIValue(value, label: label)
+        if let invalid = value.first(where: { forbiddenCLISegmentCharacters.contains($0) }) {
+            throw SecretResolutionError.invalidReference(
+                .invalidFormat(scheme: "op", message: "Unsupported character '\(invalid)' in 'op://' \(label) segment.")
+            )
+        }
+    }
+
+    private static func validateSafeCLIQueryComponent(_ value: String, label: String) throws {
+        try validateSafeCLIValue(value, label: label)
+        if let invalid = value.first(where: { forbiddenCLIQueryCharacters.contains($0) }) {
+            throw SecretResolutionError.invalidReference(
+                .invalidFormat(scheme: "op", message: "Unsupported character '\(invalid)' in 'op://' \(label).")
+            )
         }
     }
 

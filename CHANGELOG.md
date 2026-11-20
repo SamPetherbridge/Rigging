@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`RiggingCore` & `RiggingOnePassword`:** Preserve literal spaces in `OnePasswordSecretReference.opReadURI` so `op inject` and `op read` accept space-containing vault, item, section, and field names without `%20` percent-encoding errors, while keeping 1Password Connect HTTP path encoding separate and rejecting CLI delimiter/template-breaking characters ([#5](https://github.com/SamPetherbridge/Rigging/issues/5)).
+
 ## [0.1.0] - 2026-11-16
 
 ### Added
