@@ -122,46 +122,26 @@ public struct OnePasswordSecretReference: Sendable, Equatable, Hashable {
         return result
     }
 
-    /// Canonical `op://` URI suitable for `op read` or `op inject`, stripping the `account` query item
-    /// so it can be forwarded via `--account`.
+    /// Canonical `op://` secret reference formatted for 1Password CLI (`op read` and `op inject`),
+    /// preserving literal spaces while stripping the `account` query item so it can be forwarded via `--account`.
     public var opReadURI: String {
-        var path = "op://\(Self.encodeSegment(vault))/\(Self.encodeSegment(item))/"
+        var path = "op://\(vault)/\(item)/"
         if let section {
-            path += "\(Self.encodeSegment(section))/"
+            path += "\(section)/"
         }
-        path += Self.encodeSegment(field)
+        path += field
 
         let forwarded = queryItems.filter { $0.name != "account" }
         if !forwarded.isEmpty {
             let queryString = forwarded.map { item in
                 if let value = item.value {
-                    return "\(Self.encodeQueryComponent(item.name))=\(Self.encodeQueryComponent(value))"
+                    return "\(item.name)=\(value)"
                 }
-                return Self.encodeQueryComponent(item.name)
+                return item.name
             }.joined(separator: "&")
             path += "?\(queryString)"
         }
         return path
-    }
-
-    private static let segmentAllowed: CharacterSet = {
-        var set = CharacterSet.urlPathAllowed
-        set.remove(charactersIn: "/?#")
-        return set
-    }()
-
-    private static let queryAllowed: CharacterSet = {
-        var set = CharacterSet.urlQueryAllowed
-        set.remove(charactersIn: "&=?#")
-        return set
-    }()
-
-    private static func encodeSegment(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: segmentAllowed) ?? value
-    }
-
-    private static func encodeQueryComponent(_ value: String) -> String {
-        value.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? value
     }
 }
 
@@ -698,11 +678,19 @@ public enum SecretReference: Sendable, Equatable, Hashable, CustomStringConverti
             )
         }
 
-        let segments = try rawSegments.map {
-            try decodeAndValidateSegment(String($0), scheme: "op")
+        let segments = try rawSegments.map { rawSegment -> String in
+            let decoded = try decodeAndValidateSegment(String(rawSegment), scheme: "op")
+            try ensureValidOnePasswordSegment(decoded)
+            return decoded
         }
 
         let queryItems = try parseQuery(parts.query, scheme: "op")
+        for item in queryItems where item.name != "account" {
+            try ensureValidOnePasswordQueryComponent(item.name)
+            if let value = item.value {
+                try ensureValidOnePasswordQueryComponent(value)
+            }
+        }
         let accountHint = queryItems.last(where: { $0.name == "account" })?.value
 
         if segments.count == 3 {
@@ -1120,6 +1108,27 @@ public enum SecretReference: Sendable, Equatable, Hashable, CustomStringConverti
             if scalar.value < 0x20 || scalar.value == 0x7F {
                 throw SecretReferenceError.containsControlCharacter(scheme: scheme)
             }
+        }
+    }
+
+    private static let forbiddenOnePasswordSegmentCharacters: Set<Character> = ["/", "?", "#", "%", "{", "}"]
+    private static let forbiddenOnePasswordQueryCharacters: Set<Character> = ["&", "=", "?", "#", "%", "{", "}", " "]
+
+    private static func ensureValidOnePasswordSegment(_ segment: String) throws {
+        if let invalid = segment.first(where: { forbiddenOnePasswordSegmentCharacters.contains($0) }) {
+            throw SecretReferenceError.invalidFormat(
+                scheme: "op",
+                message: "Unsupported character '\(invalid)' in 'op://' secret path segment."
+            )
+        }
+    }
+
+    private static func ensureValidOnePasswordQueryComponent(_ component: String) throws {
+        if let invalid = component.first(where: { forbiddenOnePasswordQueryCharacters.contains($0) }) {
+            throw SecretReferenceError.invalidFormat(
+                scheme: "op",
+                message: "Unsupported character '\(invalid)' in 'op://' query parameter."
+            )
         }
     }
 

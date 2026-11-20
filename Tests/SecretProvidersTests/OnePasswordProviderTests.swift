@@ -48,7 +48,7 @@ struct OnePasswordProviderTests {
             "op://Eng/ASC/key_id": "ABC1234567",
             "op://Eng/ASC/private_key": multilineSpecialPEM,
             "op://Eng/Signing/Credentials/p12_password": "p@ssw0rd!#%&*()[]{}",
-            "op://Engineering/ASC%20API%20Key/issuer_id": "11111111-2222-3333-4444-555555555555",
+            "op://Engineering/ASC API Key/issuer_id": "11111111-2222-3333-4444-555555555555",
         ]
 
         let runner = MockSubprocessRunner { invocation in
@@ -125,6 +125,8 @@ struct OnePasswordProviderTests {
         #expect(stdinText.contains("_0>>>"))
         #expect(stdinText.contains("_3>>>"))
         #expect(!stdinText.contains("_4>>>"))
+        #expect(stdinText.contains("{{ op://Engineering/ASC API Key/issuer_id }}"))
+        #expect(!stdinText.contains("%20"))
 
         // Verify exact secret values (including multiline PEM with {{not_a_template}} intact).
         #expect(try batch.resolvedByKeyPath[["keyId"]]?.utf8Secret().expose() == "ABC1234567")
@@ -429,5 +431,172 @@ struct OnePasswordProviderTests {
 
         // Subprocess runner must NEVER have been invoked!
         #expect(await runner.invocationCount == 0)
+    }
+
+    @Test("Preserves spaces across vault, item, section, and field names in exact op inject templates while keeping Connect HTTP URL encoding separate")
+    func preservesSpacesInCLITemplateAndSeparatesConnectHTTPEncoding() async throws {
+        let capturedStdin = Mutex<String?>(nil)
+        let capturedArgs = Mutex<[[String]]>([])
+
+        let runner = MockSubprocessRunner { invocation in
+            capturedArgs.withLock { $0.append(invocation.arguments) }
+            if invocation.arguments.first == "inject" {
+                let tpl = try #require(invocation.stdinString)
+                capturedStdin.withLock { $0 = tpl }
+                let rendered = tpl
+                    .replacingOccurrences(
+                        of: "{{ op://Example Vault/item-id/credential }}",
+                        with: "space-vault-secret-1"
+                    )
+                    .replacingOccurrences(
+                        of: "{{ op://Example Vault/Example Item/Example Section/credential field?ssh-format=openssh }}",
+                        with: "space-all-segments-secret-2"
+                    )
+                return SubprocessResult(exitCode: 0, stdout: Data(rendered.utf8))
+            }
+            if invocation.arguments == [
+                "item", "get", "Example Item", "--vault", "Example Vault", "--otp", "--account", "team.1password.com"
+            ] {
+                return SubprocessResult(exitCode: 0, stdout: Data("135790\n".utf8))
+            }
+            return SubprocessResult(
+                exitCode: 1,
+                stdout: Data(),
+                stderr: Data("unexpected subprocess args: \(invocation.arguments)".utf8)
+            )
+        }
+
+        let fs = InMemoryFileSystem(
+            files: ["/opt/homebrew/bin/op": ""],
+            permissions: ["/opt/homebrew/bin/op": 0o755],
+            executables: ["/opt/homebrew/bin/op"]
+        )
+        let cliContext = SettingsContext.inMemory(
+            fileSystem: fs,
+            subprocessRunner: runner,
+            secretProviders: [.onePassword()]
+        )
+
+        let requests = [
+            SecretResolutionRequest(
+                keyPath: ["mailToken"],
+                rawString: "op://Example Vault/item-id/credential?account=team.1password.com",
+                origin: .environment(variable: "MAIL_TOKEN")
+            ),
+            SecretResolutionRequest(
+                keyPath: ["sshKey"],
+                rawString: "op://Example Vault/Example Item/Example Section/credential field?account=team.1password.com&ssh-format=openssh",
+                origin: .environment(variable: "SSH_KEY")
+            ),
+            // Percent-encoded %20 in raw input deduplicates and normalizes to the same space-preserving CLI reference.
+            SecretResolutionRequest(
+                keyPath: ["duplicateMailToken"],
+                rawString: "op://Example%20Vault/item-id/credential?account=team.1password.com",
+                origin: .environment(variable: "DUP_MAIL_TOKEN")
+            ),
+            SecretResolutionRequest(
+                keyPath: ["otp"],
+                rawString: "op://Example Vault/Example Item/one-time password?attribute=otp&account=team.1password.com",
+                origin: .environment(variable: "OTP")
+            ),
+        ]
+
+        let batch = await SecretResolver().resolveAll(requests, context: cliContext)
+        #expect(batch.issues.isEmpty)
+        #expect(try batch.resolvedByKeyPath[["mailToken"]]?.utf8Secret().expose() == "space-vault-secret-1")
+        #expect(try batch.resolvedByKeyPath[["duplicateMailToken"]]?.utf8Secret().expose() == "space-vault-secret-1")
+        #expect(try batch.resolvedByKeyPath[["sshKey"]]?.utf8Secret().expose() == "space-all-segments-secret-2")
+        #expect(try batch.resolvedByKeyPath[["otp"]]?.utf8Secret().expose() == "135790")
+
+        // Assert exact `op inject` stdin template structure and absence of percent-encoding.
+        let exactStdin = try #require(capturedStdin.withLock { $0 })
+        #expect(!exactStdin.contains("%"))
+        let lines = exactStdin.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        #expect(lines.count == 2)
+
+        let prefix = "<<<RIGGING_START_"
+        #expect(lines[0].hasPrefix(prefix))
+        let afterPrefix = lines[0].dropFirst(prefix.count)
+        let nonce = String(afterPrefix.prefix(32))
+        #expect(nonce.count == 32)
+        #expect(nonce.unicodeScalars.allSatisfy { ($0.value >= 0x30 && $0.value <= 0x39) || ($0.value >= 0x61 && $0.value <= 0x66) })
+
+        #expect(
+            lines[0] == "<<<RIGGING_START_\(nonce)_0>>>{{ op://Example Vault/item-id/credential }}<<<RIGGING_END_\(nonce)_0>>>"
+        )
+        #expect(
+            lines[1] == "<<<RIGGING_START_\(nonce)_1>>>{{ op://Example Vault/Example Item/Example Section/credential field?ssh-format=openssh }}<<<RIGGING_END_\(nonce)_1>>>"
+        )
+
+        let recordedArgs = capturedArgs.withLock { $0 }
+        #expect(recordedArgs.contains(["inject", "--account", "team.1password.com"]))
+
+        // Verify Connect REST mode still percent-encodes HTTP URL path segments separately from CLI formatting.
+        let connectRequestURIs = Mutex<[String]>([])
+        let connectTransport = ClosureOnePasswordHTTPTransport { request in
+            let url = try #require(request.url)
+            connectRequestURIs.withLock { $0.append(url.absoluteString) }
+            let ok: (String) -> (Data, HTTPURLResponse) = { body in
+                (Data(body.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            }
+            switch url.path {
+            case "/v1/vaults":
+                return ok(#"[{"id":"vault id","name":"Example Vault"}]"#)
+            case "/v1/vaults/vault id/items":
+                return ok(
+                    #"""
+                    [{
+                      "id": "item id",
+                      "title": "Example Item",
+                      "sections": [{"id": "sec_1", "label": "Example Section"}],
+                      "fields": [{"id": "f_1", "label": "credential field", "value": "connect-space-secret", "section": {"id": "sec_1"}}]
+                    }]
+                    """#
+                )
+            default:
+                return (Data(), HTTPURLResponse(url: url, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            }
+        }
+
+        let connectProvider: OnePasswordProvider = .onePasswordConnect(
+            host: URL(string: "https://connect.internal.example")!,
+            token: Secret("connect_tok_abc123"),
+            httpTransport: connectTransport
+        )
+        let connectResolved = try await SecretResolver().resolve(
+            SecretResolutionRequest(
+                keyPath: ["cred"],
+                rawString: "op://Example Vault/Example Item/Example Section/credential field",
+                origin: .environment(variable: "CRED")
+            ),
+            context: .inMemory(secretProviders: [connectProvider])
+        )
+        #expect(try connectResolved.utf8Secret().expose() == "connect-space-secret")
+        let urls = connectRequestURIs.withLock { $0 }
+        #expect(urls == [
+            "https://connect.internal.example/v1/vaults",
+            "https://connect.internal.example/v1/vaults/vault%20id/items",
+        ])
+
+        // Programmatically constructed references with template/delimiter characters are rejected before CLI invocation.
+        let unsafeProgrammaticRefs: [OnePasswordSecretReference] = [
+            OnePasswordSecretReference(vault: "Vault/Slash", item: "Item", field: "field"),
+            OnePasswordSecretReference(vault: "Vault", item: "Item%Percent", field: "field"),
+            OnePasswordSecretReference(vault: "Vault", item: "Item", field: "field}}"),
+            OnePasswordSecretReference(
+                vault: "Vault",
+                item: "Item",
+                field: "field",
+                queryItems: [SecretQueryItem(name: "ssh-format", value: "open ssh")]
+            ),
+        ]
+        for badOpRef in unsafeProgrammaticRefs {
+            do {
+                _ = try await OnePasswordProvider().resolveBatch([.onePassword(badOpRef)], context: cliContext)
+                Issue.record("Expected invalidReference for \(badOpRef)")
+            } catch let error as SecretResolutionError {
+                #expect(error.exitCode == 2)
+            }
+        }
     }
 }
