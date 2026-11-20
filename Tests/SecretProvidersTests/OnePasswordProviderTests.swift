@@ -599,4 +599,236 @@ struct OnePasswordProviderTests {
             }
         }
     }
+
+    @Test("Classifies CLI op inject rate limits with optional retryAfter without leaking stderr secrets, preserving auth and itemNotFound cases")
+    func cliRateLimitClassificationAndStructuredValidationIssue() async throws {
+        let fs = InMemoryFileSystem(
+            files: ["/opt/homebrew/bin/op": ""],
+            permissions: ["/opt/homebrew/bin/op": 0o755],
+            executables: ["/opt/homebrew/bin/op"]
+        )
+        let ref = try SecretReference.parse("op://Eng/ASC/private_key")
+        let plantedSecret = "ops_planted_stderr_secret_401_not_found_987654"
+
+        let cases: [(stderr: String, expectedRetry: Duration?)] = [
+            (
+                "Too many requests. Your client has been rate-limited. Try again in 30 seconds (token=\(plantedSecret))",
+                .seconds(30)
+            ),
+            (
+                "Too many requests. Your client has been rate-limited. Try again in 1 second",
+                .seconds(1)
+            ),
+            (
+                "Too many requests: service account rate limit exceeded. Try again in 60 seconds",
+                .seconds(60)
+            ),
+            (
+                "Too many requests. Your client has been rate-limited. Try again in  seconds",
+                nil
+            ),
+            (
+                "Too many requests. Your client has been rate-limited. Try again in soon seconds",
+                nil
+            ),
+            (
+                "Too many requests. Your client has been rate-limited. Try again in -5 seconds",
+                nil
+            ),
+            (
+                "Too many requests. Your client has been rate-limited. Try again in 0 seconds",
+                nil
+            ),
+            (
+                "Too many requests. Your client has been rate-limited. Try again in 99999999 seconds",
+                nil
+            ),
+            (
+                "Too many requests. Your client has been rate-limited. Try again in 999999999999999999999 seconds",
+                nil
+            ),
+            (
+                "Your client has been rate-limited. Raw secret: \(plantedSecret)",
+                nil
+            ),
+        ]
+
+        for (stderrText, expectedRetry) in cases {
+            let runner = MockSubprocessRunner(results: [
+                SubprocessResult(exitCode: 1, stdout: Data(), stderr: Data(stderrText.utf8)),
+                SubprocessResult(exitCode: 1, stdout: Data(), stderr: Data(stderrText.utf8)),
+            ])
+            let provider = OnePasswordProvider()
+            let context = SettingsContext.inMemory(
+                fileSystem: fs,
+                subprocessRunner: runner,
+                secretProviders: [provider]
+            )
+
+            // 1. Direct provider switch on SecretResolutionError.rateLimited
+            do {
+                _ = try await provider.resolveBatch([ref], context: context)
+                Issue.record("Expected SecretResolutionError.rateLimited for stderr: \(stderrText)")
+            } catch let error as SecretResolutionError {
+                #expect(error.exitCode == 6)
+                #expect(error.issueKind == .providerFailure)
+                if case .rateLimited(let scheme, let message, let retryAfter, let remediation) = error {
+                    #expect(scheme == "op")
+                    #expect(retryAfter == expectedRetry)
+                    #expect(!message.contains(plantedSecret))
+                    #expect(!message.contains("Too many requests"))
+                    #expect(!(remediation ?? "").contains(plantedSecret))
+                } else {
+                    Issue.record("Expected .rateLimited, got \(error)")
+                }
+                #expect(!error.description.contains(plantedSecret))
+            }
+
+            // 2. SecretResolver -> ValidationIssue & SettingsValidationError.jsonPayload()
+            do {
+                _ = try await SecretResolver().resolve(
+                    SecretResolutionRequest(
+                        keyPath: ["privateKey"],
+                        rawString: "op://Eng/ASC/private_key",
+                        origin: .environment(variable: "ASC_PRIVATE_KEY")
+                    ),
+                    context: context
+                )
+                Issue.record("Expected SettingsValidationError")
+            } catch let validationError as SettingsValidationError {
+                #expect(validationError.exitCode == 6)
+                let issue = try #require(validationError.issues.first)
+                #expect(issue.kind == .providerFailure)
+                #expect(issue.isRateLimited == true)
+                #expect(issue.retryAfter == expectedRetry)
+                #expect(!issue.message.contains(plantedSecret))
+                #expect(!validationError.description.contains(plantedSecret))
+
+                let jsonData = validationError.jsonPayload()
+                let jsonText = String(decoding: jsonData, as: UTF8.self)
+                #expect(!jsonText.contains(plantedSecret))
+
+                let parsed = try #require(try JSONSerialization.jsonObject(with: jsonData) as? [String: Any])
+                let jsonIssues = try #require(parsed["issues"] as? [[String: Any]])
+                let firstJSON = try #require(jsonIssues.first)
+                #expect(firstJSON["isRateLimited"] as? Bool == true)
+                if let expectedRetry {
+                    #expect(firstJSON["retryAfterSeconds"] as? Double == Double(expectedRetry.components.seconds))
+                } else {
+                    #expect(firstJSON["retryAfterSeconds"] == nil)
+                }
+            }
+        }
+
+        // Existing "not signed in" and "not found" (even for an item named "rate limit") retain their classifications.
+        let preservedRunner = MockSubprocessRunner(results: [
+            SubprocessResult(exitCode: 1, stdout: Data(), stderr: Data("[ERROR] You are not signed in.".utf8)),
+            SubprocessResult(exitCode: 1, stdout: Data(), stderr: Data("[ERROR] \"rate limit\" isn't an item in the \"Eng\" vault.".utf8)),
+        ])
+        let preservedCtx = SettingsContext.inMemory(fileSystem: fs, subprocessRunner: preservedRunner)
+        do {
+            _ = try await OnePasswordProvider().resolveBatch([ref], context: preservedCtx)
+            Issue.record("Expected authenticationFailed")
+        } catch let error as SecretResolutionError {
+            if case .authenticationFailed = error {} else {
+                Issue.record("Expected .authenticationFailed, got \(error)")
+            }
+        }
+        do {
+            _ = try await OnePasswordProvider().resolveBatch([ref], context: preservedCtx)
+            Issue.record("Expected itemNotFound")
+        } catch let error as SecretResolutionError {
+            if case .itemNotFound = error {} else {
+                Issue.record("Expected .itemNotFound, got \(error)")
+            }
+        }
+    }
+
+    @Test("Classifies Connect HTTP 429 as rateLimited with Retry-After delta-seconds parsing and no response-body leakage")
+    func connectHTTP429RateLimitClassification() async throws {
+        let ref = try SecretReference.parse("op://Eng/ASC/key_id")
+        let leakedBodySecret = "connect_429_body_secret_payload_abcdef12345"
+
+        let headerCases: [(headers: [String: String]?, expectedRetry: Duration?)] = [
+            (["Retry-After": "45"], .seconds(45)),
+            (["retry-after": " 12 "], .seconds(12)),
+            (nil, nil),
+            (["Retry-After": ""], nil),
+            (["Retry-After": "invalid"], nil),
+            (["Retry-After": "-30"], nil),
+            (["Retry-After": "0"], nil),
+            (["Retry-After": "99999999"], nil),
+            (["Retry-After": "Fri, 20 Nov 2026 01:30:00 GMT"], nil),
+        ]
+
+        for (headers, expectedRetry) in headerCases {
+            let transport = ClosureOnePasswordHTTPTransport { request in
+                let url = try #require(request.url)
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: 429,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: headers
+                )!
+                let body = Data(#"{"status":429,"message":"Too Many Requests","debug":"\#(leakedBodySecret)"}"#.utf8)
+                return (body, response)
+            }
+            let provider: OnePasswordProvider = .onePasswordConnect(
+                host: URL(string: "https://connect.internal.example")!,
+                token: Secret("connect_bearer_tok"),
+                httpTransport: transport
+            )
+            let context = SettingsContext.inMemory(secretProviders: [provider])
+
+            do {
+                _ = try await provider.resolveBatch([ref], context: context)
+                Issue.record("Expected .rateLimited for HTTP 429 with headers \(String(describing: headers))")
+            } catch let error as SecretResolutionError {
+                #expect(error.exitCode == 6)
+                if case .rateLimited(let scheme, let message, let retryAfter, let remediation) = error {
+                    #expect(scheme == "op")
+                    #expect(retryAfter == expectedRetry)
+                    #expect(!message.contains(leakedBodySecret))
+                    #expect(!(remediation ?? "").contains(leakedBodySecret))
+                } else {
+                    Issue.record("Expected .rateLimited, got \(error)")
+                }
+                #expect(!error.description.contains(leakedBodySecret))
+            }
+
+            let batch = await SecretResolver().resolveAll(
+                [SecretResolutionRequest(keyPath: ["keyId"], rawString: "op://Eng/ASC/key_id", origin: .environment(variable: "KEY_ID"))],
+                context: context
+            )
+            let issue = try #require(batch.issues.first)
+            #expect(issue.exitCode == 6)
+            #expect(issue.isRateLimited == true)
+            #expect(issue.retryAfter == expectedRetry)
+            #expect(!issue.message.contains(leakedBodySecret))
+            let valErr = SettingsValidationError(issues: batch.issues, redactor: context.redactor)
+            #expect(!String(decoding: valErr.jsonPayload(), as: UTF8.self).contains(leakedBodySecret))
+        }
+
+        // HTTP 403 remains authenticationFailed and HTTP 404 remains itemNotFound.
+        for (statusCode, isAuth) in [(403, true), (404, false)] {
+            let transport = ClosureOnePasswordHTTPTransport { request in
+                (Data(), HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: nil)!)
+            }
+            let provider: OnePasswordProvider = .onePasswordConnect(
+                host: URL(string: "https://connect.internal.example")!,
+                token: Secret("connect_bearer_tok"),
+                httpTransport: transport
+            )
+            do {
+                _ = try await provider.resolveBatch([ref], context: .inMemory())
+                Issue.record("Expected error for HTTP \(statusCode)")
+            } catch let error as SecretResolutionError {
+                if isAuth {
+                    if case .authenticationFailed = error {} else { Issue.record("Expected authenticationFailed for 403") }
+                } else {
+                    if case .itemNotFound = error {} else { Issue.record("Expected itemNotFound for 404") }
+                }
+            }
+        }
+    }
 }

@@ -76,6 +76,12 @@ public struct ValidationIssue: Error, Sendable, Equatable, Hashable, Codable, Cu
     /// Actionable remediation guidance (such as a `chmod 600` command or CLI login hint).
     public let remediation: String?
 
+    /// Whether the underlying secret provider failure was caused by rate limiting.
+    public let isRateLimited: Bool
+
+    /// Provider-supplied retry delay when ``isRateLimited`` is `true` and a valid interval was reported.
+    public let retryAfter: Duration?
+
     /// Alias for ``keyPath`` matching model-level validation conventions.
     public var path: [String] { keyPath }
 
@@ -89,6 +95,8 @@ public struct ValidationIssue: Error, Sendable, Equatable, Hashable, Codable, Cu
     ///   - expectedType: Expected Swift type name, if applicable.
     ///   - envVariableHint: Suggested environment variable name for remediation.
     ///   - remediation: Optional actionable fix instruction.
+    ///   - isRateLimited: Whether this issue originated from a secret provider rate limit.
+    ///   - retryAfter: Optional provider-supplied retry interval.
     public init(
         keyPath: [String],
         kind: ValidationIssueKind,
@@ -96,7 +104,9 @@ public struct ValidationIssue: Error, Sendable, Equatable, Hashable, Codable, Cu
         origin: SettingOrigin? = nil,
         expectedType: String? = nil,
         envVariableHint: String? = nil,
-        remediation: String? = nil
+        remediation: String? = nil,
+        isRateLimited: Bool = false,
+        retryAfter: Duration? = nil
     ) {
         self.keyPath = keyPath
         self.kind = kind
@@ -105,6 +115,8 @@ public struct ValidationIssue: Error, Sendable, Equatable, Hashable, Codable, Cu
         self.expectedType = expectedType
         self.envVariableHint = envVariableHint
         self.remediation = remediation
+        self.isRateLimited = isRateLimited
+        self.retryAfter = retryAfter
     }
 
     /// Creates a structured validation issue keyed by `path`, defaulting `kind` to ``ValidationIssueKind/crossField``.
@@ -117,6 +129,8 @@ public struct ValidationIssue: Error, Sendable, Equatable, Hashable, Codable, Cu
     ///   - expectedType: Expected Swift type name, if applicable.
     ///   - envVariableHint: Suggested environment variable name for remediation.
     ///   - remediation: Optional actionable fix instruction.
+    ///   - isRateLimited: Whether this issue originated from a secret provider rate limit.
+    ///   - retryAfter: Optional provider-supplied retry interval.
     public init(
         path: [String],
         kind: ValidationIssueKind = .crossField,
@@ -124,7 +138,9 @@ public struct ValidationIssue: Error, Sendable, Equatable, Hashable, Codable, Cu
         origin: SettingOrigin? = nil,
         expectedType: String? = nil,
         envVariableHint: String? = nil,
-        remediation: String? = nil
+        remediation: String? = nil,
+        isRateLimited: Bool = false,
+        retryAfter: Duration? = nil
     ) {
         self.init(
             keyPath: path,
@@ -133,8 +149,58 @@ public struct ValidationIssue: Error, Sendable, Equatable, Hashable, Codable, Cu
             origin: origin,
             expectedType: expectedType,
             envVariableHint: envVariableHint,
-            remediation: remediation
+            remediation: remediation,
+            isRateLimited: isRateLimited,
+            retryAfter: retryAfter
         )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case keyPath
+        case kind
+        case message
+        case origin
+        case expectedType
+        case envVariableHint
+        case remediation
+        case isRateLimited
+        case retryAfter
+    }
+
+    /// Decodes a validation issue, defaulting ``isRateLimited`` to `false` when absent.
+    ///
+    /// - Parameter decoder: Decoder reading serialized validation data.
+    /// - Throws: A decoding error if required fields are missing or malformed.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.keyPath = try container.decode([String].self, forKey: .keyPath)
+        self.kind = try container.decode(ValidationIssueKind.self, forKey: .kind)
+        self.message = try container.decode(String.self, forKey: .message)
+        self.origin = try container.decodeIfPresent(SettingOrigin.self, forKey: .origin)
+        self.expectedType = try container.decodeIfPresent(String.self, forKey: .expectedType)
+        self.envVariableHint = try container.decodeIfPresent(String.self, forKey: .envVariableHint)
+        self.remediation = try container.decodeIfPresent(String.self, forKey: .remediation)
+        self.isRateLimited = try container.decodeIfPresent(Bool.self, forKey: .isRateLimited) ?? false
+        self.retryAfter = try container.decodeIfPresent(Duration.self, forKey: .retryAfter)
+    }
+
+    /// Encodes this validation issue into `encoder`.
+    ///
+    /// - Parameter encoder: Encoder receiving serialized validation data.
+    /// - Throws: An encoding error if encoding any field fails.
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(keyPath, forKey: .keyPath)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(message, forKey: .message)
+        try container.encodeIfPresent(origin, forKey: .origin)
+        try container.encodeIfPresent(expectedType, forKey: .expectedType)
+        try container.encodeIfPresent(envVariableHint, forKey: .envVariableHint)
+        try container.encodeIfPresent(remediation, forKey: .remediation)
+        if isRateLimited {
+            try container.encode(isRateLimited, forKey: .isRateLimited)
+        }
+        try container.encodeIfPresent(retryAfter, forKey: .retryAfter)
     }
 
     /// Process exit code associated with this issue (`2`, `4`, or `6`).
@@ -295,11 +361,13 @@ public struct SettingsValidationError: Error, Sendable, Equatable, CustomStringC
         let envVariableHint: String?
         let exitCode: Int32
         let expectedType: String?
+        let isRateLimited: Bool?
         let keyPath: String
         let kind: String
         let message: String
         let origin: String?
         let remediation: String?
+        let retryAfterSeconds: Double?
     }
 
     private static func buildHumanDescription(
@@ -334,15 +402,20 @@ public struct SettingsValidationError: Error, Sendable, Equatable, CustomStringC
         }
 
         let mapIssue: (ValidationIssue) -> JSONIssueEntry = { issue in
-            JSONIssueEntry(
+            let retrySeconds = issue.retryAfter.map { duration in
+                Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000.0
+            }
+            return JSONIssueEntry(
                 envVariableHint: issue.envVariableHint,
                 exitCode: issue.exitCode,
                 expectedType: issue.expectedType,
+                isRateLimited: issue.isRateLimited ? true : nil,
                 keyPath: issue.keyPathString,
                 kind: issue.kind.rawValue,
                 message: scrub(issue.message) ?? issue.message,
                 origin: scrub(issue.origin?.description),
-                remediation: scrub(issue.remediation)
+                remediation: scrub(issue.remediation),
+                retryAfterSeconds: retrySeconds
             )
         }
 
