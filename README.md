@@ -33,7 +33,7 @@ Add `Rigging` to your `Package.swift` (Swift 6.2+, macOS 15+ / iOS 18+ / tvOS 18
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.1.0"),
+    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.2.0"),
 ],
 targets: [
     .executableTarget(

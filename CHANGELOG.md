@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-20
+
 ### Added
 
 - **`RiggingCore`:** Add `SecretResolutionError.rateLimited(scheme:message:retryAfter:remediation:)` (`exitCode == 6`) and structured `ValidationIssue.isRateLimited` / `ValidationIssue.retryAfter` metadata (also surfaced in `SettingsValidationError.jsonPayload()`) ([#4](https://github.com/SamPetherbridge/Rigging/issues/4)).
@@ -44,5 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation & Tooling:**
   - Multi-module Apple DocC catalogs across all 11 library products with Swift Package Index (`.spi.yml`) configuration and `swift-docc-plugin` integration.
 
-[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/SamPetherbridge/Rigging/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/SamPetherbridge/Rigging/releases/tag/0.1.0
