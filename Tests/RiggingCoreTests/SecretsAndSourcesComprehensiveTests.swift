@@ -248,6 +248,8 @@ struct SecretsAndSourcesComprehensiveTests {
             (.authenticationFailed(scheme: "op", message: "not signed in", remediation: "Run op signin"), 6),
             (.itemNotFound(scheme: "op", referenceRedacted: "op://v/i/f", message: "no vault"), 6),
             (.itemNotFound(scheme: "op", referenceRedacted: "op://v/i/f", message: nil), 6),
+            (.rateLimited(scheme: "op", message: "rate-limited", retryAfter: .seconds(30), remediation: "Wait"), 6),
+            (.rateLimited(scheme: "op", message: "rate-limited", retryAfter: nil), 6),
             (.providerFailed(scheme: "bw", message: "locked", remediation: "Unlock"), 6),
             (.invalidReference(.containsNullByte), 2),
             (.transformFailed(transform: "decodeBase64", reason: "bad base64"), 2),
@@ -260,6 +262,25 @@ struct SecretsAndSourcesComprehensiveTests {
         }
         #expect(SecretResolutionError.formatFourDigitOctal(0o600) == "0600")
         #expect(SecretResolutionError.formatChmodOctal(0o040) == "040")
+
+        // ValidationIssue Codable round-trip with & without rate-limit fields
+        let rateIssue = ValidationIssue(
+            keyPath: ["token"],
+            kind: .providerFailure,
+            message: "Rate limited",
+            isRateLimited: true,
+            retryAfter: .seconds(30)
+        )
+        let encodedIssue = try JSONEncoder().encode(rateIssue)
+        let decodedIssue = try JSONDecoder().decode(ValidationIssue.self, from: encodedIssue)
+        #expect(decodedIssue == rateIssue)
+        #expect(decodedIssue.isRateLimited == true)
+        #expect(decodedIssue.retryAfter == .seconds(30))
+
+        let legacyIssueJSON = Data(#"{"keyPath":["port"],"kind":"invalidValue","message":"Bad port"}"#.utf8)
+        let decodedLegacy = try JSONDecoder().decode(ValidationIssue.self, from: legacyIssueJSON)
+        #expect(decodedLegacy.isRateLimited == false)
+        #expect(decodedLegacy.retryAfter == nil)
 
         // IndirectEnvProvider: single hit, allowEmptyValue, partial batch failure
         let envContext = SettingsContext.inMemory(

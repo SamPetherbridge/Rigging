@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`RiggingCore`:** Add `SecretResolutionError.rateLimited(scheme:message:retryAfter:remediation:)` (`exitCode == 6`) and structured `ValidationIssue.isRateLimited` / `ValidationIssue.retryAfter` metadata (also surfaced in `SettingsValidationError.jsonPayload()`) ([#4](https://github.com/SamPetherbridge/Rigging/issues/4)).
+
 ### Fixed
 
+- **`RiggingOnePassword`:** Classify 1Password CLI rate-limit responses (`op inject` / `op` stderr) and 1Password Connect HTTP `429` responses (`Retry-After` delta-seconds) as `SecretResolutionError.rateLimited` without echoing `stderr` or response bodies ([#4](https://github.com/SamPetherbridge/Rigging/issues/4)).
 - **`RiggingCore` & `RiggingOnePassword`:** Preserve literal spaces in `OnePasswordSecretReference.opReadURI` so `op inject` and `op read` accept space-containing vault, item, section, and field names without `%20` percent-encoding errors, while keeping 1Password Connect HTTP path encoding separate and rejecting CLI delimiter/template-breaking characters ([#5](https://github.com/SamPetherbridge/Rigging/issues/5)).
 
 ## [0.1.0] - 2026-11-16

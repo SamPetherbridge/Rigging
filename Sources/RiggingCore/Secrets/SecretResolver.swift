@@ -109,6 +109,14 @@ public enum SecretResolutionError: Error, Sendable, Equatable, Hashable, CustomS
     /// Exit code `6`: Secret item or field was not found in the secret provider vault.
     case itemNotFound(scheme: String, referenceRedacted: String, message: String? = nil)
 
+    /// Exit code `6`: Secret provider rejected the request due to rate limiting.
+    case rateLimited(
+        scheme: String,
+        message: String,
+        retryAfter: Duration?,
+        remediation: String? = nil
+    )
+
     /// Exit code `6`: General secret provider invocation failure.
     case providerFailed(scheme: String, message: String, remediation: String? = nil)
 
@@ -130,6 +138,7 @@ public enum SecretResolutionError: Error, Sendable, Equatable, Hashable, CustomS
              .unresolvedReference,
              .authenticationFailed,
              .itemNotFound,
+             .rateLimited,
              .providerFailed:
             return .providerFailure
         case .invalidReference, .transformFailed:
@@ -166,6 +175,8 @@ public enum SecretResolutionError: Error, Sendable, Equatable, Hashable, CustomS
             return hint
         case .itemNotFound(_, let ref, _):
             return "Verify the vault, item, and field path in '\(ref)'."
+        case .rateLimited(_, _, _, let hint):
+            return hint
         case .providerFailed(_, _, let hint):
             return hint
         case .invalidReference:
@@ -203,6 +214,8 @@ public enum SecretResolutionError: Error, Sendable, Equatable, Hashable, CustomS
                 return "Secret '\(ref)' not found in '\(scheme)' provider: \(detail)"
             }
             return "Secret '\(ref)' not found in '\(scheme)' provider."
+        case .rateLimited(let scheme, let message, _, _):
+            return "Secret provider '\(scheme)' rate-limited: \(message)"
         case .providerFailed(let scheme, let message, _):
             return "Secret provider '\(scheme)' failed: \(message)"
         case .invalidReference(let error):
@@ -1347,14 +1360,25 @@ public struct SecretResolver: Sendable {
         for request: SecretResolutionRequest,
         redactor: DiagnosticRedactor
     ) -> ValidationIssue {
-        ValidationIssue(
+        let isRateLimited: Bool
+        let retryAfter: Duration?
+        if case .rateLimited(_, _, let interval, _) = error {
+            isRateLimited = true
+            retryAfter = interval
+        } else {
+            isRateLimited = false
+            retryAfter = nil
+        }
+        return ValidationIssue(
             keyPath: request.keyPath,
             kind: error.issueKind,
             message: redactor.scrub(error.description),
             origin: request.node.origin,
             expectedType: request.expectedType,
             envVariableHint: request.envVariableHint,
-            remediation: error.remediation.map { redactor.scrub($0) }
+            remediation: error.remediation.map { redactor.scrub($0) },
+            isRateLimited: isRateLimited,
+            retryAfter: retryAfter
         )
     }
 

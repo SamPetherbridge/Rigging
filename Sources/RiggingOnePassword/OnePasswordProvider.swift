@@ -811,6 +811,16 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
                 referenceRedacted: reference?.redactedDescription ?? "op://<vault>",
                 message: "1Password Connect server returned HTTP 404."
             )
+        case 429:
+            let retryAfter = Self.parseRetryAfterDeltaSeconds(
+                Self.httpHeaderValue("Retry-After", in: response)
+            )
+            throw SecretResolutionError.rateLimited(
+                scheme: "op",
+                message: "1Password Connect server rate-limited request (HTTP 429).",
+                retryAfter: retryAfter,
+                remediation: "Wait before retrying 1Password Connect requests."
+            )
         default:
             throw SecretResolutionError.providerFailed(
                 scheme: "op",
@@ -1069,6 +1079,66 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         }
     }
 
+    /// Maximum accepted retry-after interval (7 days) so malformed or overflowing integers
+    /// cannot overflow downstream clock arithmetic.
+    private static let maxRetryAfterSeconds: Int64 = 7 * 24 * 60 * 60
+
+    private static func httpHeaderValue(_ name: String, in response: HTTPURLResponse) -> String? {
+        if let direct = response.value(forHTTPHeaderField: name) {
+            return direct
+        }
+        let target = name.lowercased()
+        for (key, value) in response.allHeaderFields {
+            if String(describing: key).lowercased() == target {
+                return String(describing: value)
+            }
+        }
+        return nil
+    }
+
+    private static func parseRetryAfterDeltaSeconds(_ raw: String?) -> Duration? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              trimmed.unicodeScalars.allSatisfy({ $0.value >= 0x30 && $0.value <= 0x39 }),
+              let seconds = Int64(trimmed),
+              seconds > 0,
+              seconds <= maxRetryAfterSeconds else {
+            return nil
+        }
+        return .seconds(seconds)
+    }
+
+    private static func parseCLIRetryAfter(from lowercasedStderr: String) -> Duration? {
+        guard let prefixRange = lowercasedStderr.range(of: "try again in ") else {
+            return nil
+        }
+        let afterPrefix = lowercasedStderr[prefixRange.upperBound...]
+        guard let unitRange = afterPrefix.range(of: " second") else {
+            return nil
+        }
+        let rawInterval = String(afterPrefix[..<unitRange.lowerBound])
+        return parseRetryAfterDeltaSeconds(rawInterval)
+    }
+
+    private static func isUnambiguousRateLimitStderr(_ lower: String) -> Bool {
+        lower.contains("rate-limited")
+            || lower.contains("rate limited")
+            || lower.contains("too many requests")
+            || lower.contains("rate limit exceeded")
+            || lower.contains("exceeded the rate limit")
+            || lower.contains("rate limit reached")
+            || lower.contains("hit the rate limit")
+    }
+
+    private static func makeCLIRateLimitedError(exitCode: Int32, lowercasedStderr: String) -> SecretResolutionError {
+        .rateLimited(
+            scheme: "op",
+            message: "1Password CLI request was rate-limited (exit code \(exitCode)).",
+            retryAfter: parseCLIRetryAfter(from: lowercasedStderr),
+            remediation: "Wait before retrying 1Password requests, or reduce concurrent vault reads."
+        )
+    }
+
     /// Maps non-zero `op` CLI exit codes to structured `SecretResolutionError` (`exitCode = 6`)
     /// without echoing raw `stderr` contents that could contain tokens, keys, or template fragments.
     private static func classifyCLIFailure(
@@ -1078,6 +1148,10 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         context: SettingsContext
     ) -> SecretResolutionError {
         let lower = stderr.lowercased()
+
+        if isUnambiguousRateLimitStderr(lower) {
+            return makeCLIRateLimitedError(exitCode: exitCode, lowercasedStderr: lower)
+        }
 
         if lower.contains("not currently signed in")
             || lower.contains("not signed in")
@@ -1108,6 +1182,12 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
                 referenceRedacted: reference?.redactedDescription ?? "op://<batch>",
                 message: "1Password CLI could not find the requested vault, item, or field (exit code \(exitCode))."
             )
+        }
+
+        if lower.contains("rate limit")
+            || lower.contains("http 429")
+            || lower.contains("status 429") {
+            return makeCLIRateLimitedError(exitCode: exitCode, lowercasedStderr: lower)
         }
 
         return .providerFailed(
