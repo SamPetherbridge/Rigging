@@ -1,5 +1,11 @@
 # Rigging
 
+[![Release](https://img.shields.io/github/v/release/SamPetherbridge/Rigging?color=blue)](https://github.com/SamPetherbridge/Rigging/releases)
+[![Swift Versions](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FSamPetherbridge%2FRigging%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/SamPetherbridge/Rigging)
+[![Platforms](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FSamPetherbridge%2FRigging%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/SamPetherbridge/Rigging)
+[![Documentation](https://img.shields.io/badge/DocC-Swift%20Package%20Index-blue)](https://swiftpackageindex.com/SamPetherbridge/Rigging/documentation)
+[![License: MIT](https://img.shields.io/github/license/SamPetherbridge/Rigging)](LICENSE)
+
 **Declarative `@Settings` models, batched secret hygiene, and configuration provenance for Swift 6.**
 
 `Rigging` is the application-level settings and secret-management layer for **Swift CLIs, macOS developer & automation tools, and Swift Server services** (with full Apple-platform, SwiftUI `@Rigged`, and macOS MDM support).
@@ -369,6 +375,7 @@ import Testing
 
 Full multi-module **Apple DocC** reference documentation and conceptual guides (*Getting Started with Rigging*, *Secrets and Security Hygiene*, *Provenance and Operational Debugging*, and *Migrating from Python pydantic-settings*) are included across all 11 library targets:
 
+- **Online (Swift Package Index):** Browse hosted multi-module DocC at [swiftpackageindex.com/SamPetherbridge/Rigging/documentation](https://swiftpackageindex.com/SamPetherbridge/Rigging/documentation).
 - **In Xcode:** Open `Package.swift` and choose **Product → Build Documentation** (`⌃⇧⌘D`).
 - **From the CLI:** Run `swift package generate-documentation --target Rigging` (configured for multi-target Swift Package Index hosting via [`.spi.yml`](.spi.yml)).
 - **Architecture & Threat Model:** See [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) and [`SECURITY.md`](SECURITY.md).
