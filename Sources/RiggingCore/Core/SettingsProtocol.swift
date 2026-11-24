@@ -726,7 +726,7 @@ public struct SettingsConfiguration: Sendable, Equatable, Hashable, Codable {
     /// Policy applied when structured configuration files or prefixed environment variables contain undeclared keys.
     public var extraKeys: ExtraKeysPolicy
 
-    /// Ordered list of `.env` file paths loaded by ``DotEnvSource`` (earlier entries lose to later override files when merged in order; in ``DotEnvSource``, earlier entries win unless overridden—see ``DotEnvSource``).
+    /// Ordered list of `.env` file paths loaded by ``DotEnvSource`` (later files override earlier files when keys collide).
     public var dotEnvFiles: [String]
 
     /// Ordered list of project-level configuration file paths probed by ``ProjectConfigSource``.
@@ -1366,6 +1366,21 @@ public protocol RiggedSettings: Sendable {
     /// - Returns: Any cross-field ``ValidationIssue`` violations, or an empty array when valid.
     static func validate(_ settings: Self) -> [ValidationIssue]
 
+    /// Default secret providers used when loading this settings model without an explicit
+    /// ``SettingsContext``, including turnkey CLI subcommands such as `ConfigSubcommand`.
+    ///
+    /// Override this property on a `@Settings` or `@Rigged` model to register external secret
+    /// managers once for both `load()` and `config show` / `config doctor`:
+    ///
+    /// ```swift
+    /// extension AppSettings {
+    ///     public static var defaultSecretProviders: [any SecretProvider] {
+    ///         [.file(), .env(), .onePassword(), .keychain()]
+    ///     }
+    /// }
+    /// ```
+    static var defaultSecretProviders: [any SecretProvider] { get }
+
     /// Loads, resolves batched secrets, decodes, and exhaustively validates an immutable settings snapshot.
     ///
     /// - Parameters:
@@ -1397,13 +1412,28 @@ extension RiggedSettings {
         []
     }
 
+    /// Returns the built-in ``FileSecretProvider`` and ``IndirectEnvProvider`` backends.
+    public static var defaultSecretProviders: [any SecretProvider] {
+        [
+            FileSecretProvider(),
+            IndirectEnvProvider(),
+        ]
+    }
+
+    /// Creates a live ``SettingsContext`` pre-populated with ``defaultSecretProviders``.
+    ///
+    /// - Returns: A default ``SettingsContext`` configured with this model's ``defaultSecretProviders``.
+    public static func makeDefaultContext() -> SettingsContext {
+        SettingsContext(secretProviders: defaultSecretProviders)
+    }
+
     /// Loads and validates an immutable settings snapshot using the given ``SettingsContext`` and no extra overrides.
     ///
-    /// - Parameter context: Execution context. Defaults to `SettingsContext()`.
+    /// - Parameter context: Execution context. Defaults to ``makeDefaultContext()``.
     /// - Returns: A fully validated instance of `Self`.
     /// - Throws: ``SettingsValidationError`` if one or more fields or secrets fail validation.
     public static func load(
-        context: SettingsContext = SettingsContext()
+        context: SettingsContext = Self.makeDefaultContext()
     ) async throws -> Self {
         try await load(context: context, overrides: [])
     }

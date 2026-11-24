@@ -499,6 +499,62 @@ struct ConfigSubcommandIntegrationTests {
             )
         }
     }
+
+    @Test("RiggedSettings.defaultSecretProviders powers load(), load(cliArguments:), and ConfigSubcommand automatically")
+    func defaultSecretProvidersUsedByLoadAndConfigSubcommand() async throws {
+        // 1. Default `load()` picks up `defaultSecretProviders` without a manual `SettingsContext`.
+        let loaded = try await DefaultProvidersTestSettings.load()
+        #expect(loaded.host == "api.example.com")
+        #expect(loaded.token.expose() == "resolved-via-default-providers-secret")
+
+        // 2. Default `load(cliArguments:)` also uses `makeDefaultContext()`.
+        let parsed = try DefaultProvidersHostOptions.parse(["--host", "staging.example.com"])
+        let cliLoaded = try await DefaultProvidersTestSettings.load(cliArguments: parsed)
+        #expect(cliLoaded.host == "staging.example.com")
+        #expect(cliLoaded.token.expose() == "resolved-via-default-providers-secret")
+
+        // 3. Turnkey `ConfigSubcommand` `show` and `doctor` resolve secrets via `defaultSecretProviders` and redact plaintext.
+        let showResult = try await ConfigSubcommand<DefaultProvidersTestSettings>.execute(arguments: ["show"])
+        #expect(showResult.exitCode == 0)
+        #expect(showResult.stdout.contains("token = **********"))
+        #expect(!showResult.stdout.contains("resolved-via-default-providers-secret"))
+
+        let doctorResult = try await ConfigSubcommand<DefaultProvidersTestSettings>.execute(arguments: ["doctor", "--json"])
+        #expect(doctorResult.exitCode == 0)
+        #expect(!doctorResult.stdout.contains("resolved-via-default-providers-secret"))
+    }
+}
+
+@Settings(envPrefix: "DEFAULT_PROV_", dotEnvFiles: [])
+private struct DefaultProvidersTestSettings: Sendable, Equatable {
+    @Setting
+    var host: String = "api.example.com"
+
+    @SecretSetting
+    var token: Secret<String>
+
+    static var defaultSecretProviders: [any SecretProvider] {
+        [
+            .file(),
+            .env(),
+            MockOnePasswordProvider(secrets: [
+                "op://Team/Service/token": "resolved-via-default-providers-secret",
+            ]),
+        ]
+    }
+
+    static func customizeSources(_ defaults: DefaultSources) -> [any SettingsSource] {
+        [
+            defaults.initOverrides,
+            InitSource(values: [
+                "token": .string("op://Team/Service/token"),
+            ]),
+        ]
+    }
+}
+
+private struct DefaultProvidersHostOptions: RiggingCLIOptions {
+    @Option(name: .long) var host: String?
 }
 
 // MARK: - RiggingTOML & RiggingYAML End-to-End Integration Suite

@@ -518,13 +518,17 @@ extension RiggedSettings {
     /// ```swift
     /// let settings = try await AppSettings.load(
     ///     secretProviders: [
-    ///         FileSecretProvider(),
-    ///         IndirectEnvProvider(),
+    ///         .file(),
+    ///         .env(),
     ///         .onePassword(),
     ///         .keychain(),
     ///     ]
     /// )
     /// ```
+    ///
+    /// > Note: Passing `secretProviders` replaces ``RiggedSettings/defaultSecretProviders`` for this call.
+    /// > Include `.file()` and `.env()` (or `AppSettings.defaultSecretProviders + [...]`) if you also resolve
+    /// > `file://` or `env://` references.
     ///
     /// - Parameters:
     ///   - cliOverrides: Explicit command-line or programmatic overrides evaluated at highest priority.
@@ -533,7 +537,7 @@ extension RiggedSettings {
     ///   - homeDirectory: User home directory for `~` expansion and `~/.config/<app>/` lookup.
     ///   - fileSystem: Filesystem implementation used to inspect and read configuration files.
     ///   - subprocessRunner: Subprocess runner used by CLI-backed secret providers.
-    ///   - secretProviders: Registered `SecretProvider` backends for resolving secret URIs.
+    ///   - secretProviders: Registered `SecretProvider` backends for resolving secret URIs. Defaults to `Self.defaultSecretProviders`.
     ///   - redactor: Thread-safe `DiagnosticRedactor` scrubbing secret plaintext from diagnostics.
     ///   - secretCache: Optional actor-isolated `SecretResolutionCache` for long-running processes.
     /// - Returns: A fully resolved and validated instance of `Self`.
@@ -546,10 +550,7 @@ extension RiggedSettings {
         homeDirectory: String = NSHomeDirectory(),
         fileSystem: any FileSystem = LocalFileSystem(),
         subprocessRunner: any SubprocessRunner = ProcessSubprocessRunner(),
-        secretProviders: [any SecretProvider] = [
-            FileSecretProvider(),
-            IndirectEnvProvider(),
-        ],
+        secretProviders: [any SecretProvider] = Self.defaultSecretProviders,
         redactor: DiagnosticRedactor = DiagnosticRedactor(),
         secretCache: SecretResolutionCache? = nil
     ) async throws -> Self {

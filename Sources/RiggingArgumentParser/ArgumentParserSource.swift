@@ -605,14 +605,14 @@ extension RiggedSettings {
     /// - Parameters:
     ///   - cliArguments: A parsed `ParsableArguments` or ``RiggingCLIOptions`` instance.
     ///   - keyMap: Optional property-to-key-path remapping table.
-    ///   - context: Execution context providing environment variables, filesystem, and secret providers.
+    ///   - context: Execution context providing environment variables, filesystem, and secret providers. Defaults to `Self.makeDefaultContext()`.
     ///   - additionalOverrides: Extra programmatic overrides appended after extracted CLI arguments.
     /// - Returns: A fully validated, secret-resolved settings instance.
     /// - Throws: `SettingsValidationError` if validation, secret safety checks, or secret resolution fails.
     public static func load<Arguments: ParsableArguments>(
         cliArguments: Arguments,
         keyMap: [String: CLIFieldTarget] = [:],
-        context: SettingsContext = SettingsContext(),
+        context: SettingsContext = Self.makeDefaultContext(),
         additionalOverrides: [SettingOverride] = []
     ) async throws -> Self {
         let cliExtracted: [SettingOverride]

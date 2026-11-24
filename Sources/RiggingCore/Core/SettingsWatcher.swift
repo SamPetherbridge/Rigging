@@ -68,7 +68,7 @@ public actor SettingsWatcher<Settings: RiggedSettings> {
     ///   - onError: Optional callback invoked when a background reload fails validation.
     public init(
         initial: Settings,
-        context: SettingsContext = SettingsContext(),
+        context: SettingsContext = Settings.makeDefaultContext(),
         overrides: [SettingOverride] = [],
         watchedPaths: [String] = [],
         pollInterval: Duration = .seconds(2),
@@ -107,7 +107,7 @@ public actor SettingsWatcher<Settings: RiggedSettings> {
     /// - Returns: Active ``SettingsWatcher`` holding the validated initial snapshot.
     /// - Throws: ``SettingsValidationError`` if the initial configuration fails to load.
     public static func start(
-        context: SettingsContext = SettingsContext(),
+        context: SettingsContext = Settings.makeDefaultContext(),
         overrides: [SettingOverride] = [],
         watchedPaths: [String] = [],
         pollInterval: Duration = .seconds(2),

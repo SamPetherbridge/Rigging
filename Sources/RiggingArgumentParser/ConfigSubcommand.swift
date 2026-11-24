@@ -109,7 +109,7 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
     /// - Throws: `ArgumentParser` parsing/validation errors when invalid CLI flags are supplied.
     public static func execute(
         arguments: [String],
-        context: SettingsContext = SettingsContext(),
+        context: SettingsContext = Settings.makeDefaultContext(),
         overrides: [SettingOverride] = []
     ) async throws -> ConfigCommandExecutionResult {
         let command = try parseAsRoot(arguments)
@@ -152,19 +152,19 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
         ///
         /// - Throws: `ExitCode` (`2`, `4`, or `6`) when configuration loading or validation fails.
         public mutating func run() async throws {
-            let result = try await execute(context: SettingsContext(), overrides: [])
+            let result = try await execute(context: Settings.makeDefaultContext(), overrides: [])
             try ConfigSubcommandIO.emitAndExitIfNeeded(result)
         }
 
         /// Executes `config show` hermetically against `context` and returns redacted output and exit status.
         ///
         /// - Parameters:
-        ///   - context: Execution context providing environment, filesystem, secret providers, and redactor.
+        ///   - context: Execution context providing environment, filesystem, secret providers, and redactor. Defaults to `Settings.makeDefaultContext()`.
         ///   - overrides: Explicit setting overrides merged alongside `--profile`.
         /// - Returns: Redacted table or JSON output and semantic exit status (`0`, `2`, `4`, or `6`).
         /// - Throws: Unexpected JSON encoding errors.
         public func execute(
-            context: SettingsContext = SettingsContext(),
+            context: SettingsContext = Settings.makeDefaultContext(),
             overrides: [SettingOverride] = []
         ) async throws -> ConfigCommandExecutionResult {
             var allOverrides = overrides
@@ -264,19 +264,19 @@ public struct ConfigSubcommand<Settings: RiggedSettings>: AsyncParsableCommand {
         ///
         /// - Throws: `ExitCode` (`2`, `4`, or `6`) when configuration health checks fail.
         public mutating func run() async throws {
-            let result = try await execute(context: SettingsContext(), overrides: [])
+            let result = try await execute(context: Settings.makeDefaultContext(), overrides: [])
             try ConfigSubcommandIO.emitAndExitIfNeeded(result)
         }
 
         /// Executes `config doctor` hermetically against `context` and returns redacted diagnostics and exit status.
         ///
         /// - Parameters:
-        ///   - context: Execution context providing environment, filesystem, secret providers, and redactor.
+        ///   - context: Execution context providing environment, filesystem, secret providers, and redactor. Defaults to `Settings.makeDefaultContext()`.
         ///   - overrides: Explicit setting overrides merged alongside `--profile`.
         /// - Returns: Redacted health report and semantic exit status (`0`, `2`, `4`, or `6`).
         /// - Throws: Unexpected JSON encoding errors.
         public func execute(
-            context: SettingsContext = SettingsContext(),
+            context: SettingsContext = Settings.makeDefaultContext(),
             overrides: [SettingOverride] = []
         ) async throws -> ConfigCommandExecutionResult {
             var allOverrides = overrides
