@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
+### Added
+
+- **`RiggingCore`, `Rigging`, & `RiggingArgumentParser`:** Add `RiggedSettings.defaultSecretProviders` and `RiggedSettings.makeDefaultContext()` so `@Settings` / `@Rigged` models can register external secret providers (such as `.onePassword()` and `.keychain()`) once and have `load()`, `load(cliArguments:)`, `SettingsWatcher`, and turnkey `ConfigSubcommand` (`config show`, `config doctor`) use them automatically.
+
+### Changed
+
+- **Licensing & Governance:** Update `LICENSE` copyright to Peth Pty Ltd, add a direct maintainer contact to `CODE_OF_CONDUCT.md`, and update `SECURITY.md` supported versions to `0.3.x`.
+- **Documentation & Positioning:** Refine positioning across `README.md`, DocC catalogs, and `docs/SPECIFICATION.md` to emphasize Rigging's primary role for Swift CLIs, macOS developer/automation tools, and Swift Server services alongside `apple/swift-configuration` and `swift-argument-parser`; fix exit-code and API references in `RiggingCore.md`, `CONTRIBUTING.md`, and `SettingsProtocol.swift`; replace raw Mermaid syntax in `Rigging.md` with a DocC-native diagram for Swift Package Index hosting.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added
@@ -46,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation & Tooling:**
   - Multi-module Apple DocC catalogs across all 11 library products with Swift Package Index (`.spi.yml`) configuration and `swift-docc-plugin` integration.
 
-[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/SamPetherbridge/Rigging/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/SamPetherbridge/Rigging/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/SamPetherbridge/Rigging/releases/tag/0.1.0
