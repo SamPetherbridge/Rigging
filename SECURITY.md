@@ -6,7 +6,8 @@
 
 | Version | Supported |
 |---|---|
-| `0.1.x` (`main`) | :white_check_mark: |
+| `0.3.x` (`main`) | :white_check_mark: |
+| `< 0.3.0` | :x: |
 
 ## Reporting a Vulnerability
 

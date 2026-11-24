@@ -4,7 +4,7 @@ Bidirectional interoperability between Rigging `@Settings` models and Apple's `s
 
 ## Overview
 
-`RiggingSwiftConfiguration` bridges Rigging's compile-time typed `@Settings` models and batched secret resolution cleanly in both directions with `apple/swift-configuration`:
+`RiggingSwiftConfiguration` connects Rigging's declarative application-level `@Settings` models, exhaustive startup validation, and batched secret hygiene with Apple's `apple/swift-configuration` provider abstraction in both directions:
 
 1. **Direction A (Upstream `ConfigProvider` / `ConfigReader` → Rigging):** Wrap any `ConfigProvider`, `ConfigReader`, or `[AbsoluteConfigKey: ConfigValue]` snapshot in ``SwiftConfigurationSource`` so remote config stores, feature-flag providers, or `InMemoryProvider` participate in Rigging's source precedence, `op://` / `keychain://` secret resolution, schema validation, and `$field` provenance.
 2. **Direction B (Rigging `@Settings` → Downstream `ConfigProvider` / `ConfigReader`):** Call `settings.asConfigProvider()` or `settings.asConfigReader()` on any loaded `RiggedSettings` value to hand a standard `Configuration.ConfigReader` to Hummingbird, gRPC Swift, or ServiceLifecycle components—automatically preserving `isSecret: true` on every `@SecretSetting` field.

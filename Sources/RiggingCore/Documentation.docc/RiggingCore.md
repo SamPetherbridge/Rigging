@@ -26,7 +26,7 @@ Secret fields are wrapped in ``Secret``, which redacts `description`, `debugDesc
 
 ### Exhaustive Validation & Schema Export
 
-Rather than failing on the first missing variable, ``SettingsLoader`` collects every missing, malformed, unknown-key, and secret-provider failure into a single ``SettingsValidationError`` with `sysexits.h`-compatible exit codes (`78` for configuration errors, `69` for unavailable external providers) and `LocalizedError` formatting. Static ``SettingFieldDescriptor`` trees also drive ``JSONSchemaExporter`` and ``DotEnvExporter`` without runtime reflection.
+Rather than failing on the first missing variable, ``SettingsLoader`` collects every missing, malformed, unknown-key, cross-field, secret-safety, and secret-provider failure into a single ``SettingsValidationError`` with deterministic CLI exit codes (`2` for missing/invalid/unknown/cross-field configuration errors, `4` for unsafe secret storage, and `6` for external secret provider failures) and `LocalizedError` formatting. Static ``SettingFieldDescriptor`` trees also drive ``JSONSchemaExporter`` and ``DotEnvExporter`` without runtime reflection.
 
 ## Topics
 

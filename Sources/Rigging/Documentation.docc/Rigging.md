@@ -4,26 +4,36 @@ Strongly typed, multi-source configuration, batched leak-proof secrets, and per-
 
 ## Overview
 
-`Rigging` brings the declarative developer ergonomics of Python's `pydantic-settings` to Swift 6—purpose-built for command-line tools, background daemons, server services, and macOS/iOS applications. Annotate a struct with ``Settings(envPrefix:envNestedDelimiter:envNestedMaxSplit:caseSensitive:envIgnoreEmpty:envNullStrings:dotEnvFiles:projectConfigFiles:xdgAppName:profile:secretsDirectory:secretsNestedSubdir:trimSecretTrailingNewline:envListStrategy:managedPreferencesDomain:extraKeys:)`` (or ``Rigged(envPrefix:envNestedDelimiter:envNestedMaxSplit:caseSensitive:envIgnoreEmpty:envNullStrings:dotEnvFiles:projectConfigFiles:xdgAppName:profile:secretsDirectory:secretsNestedSubdir:trimSecretTrailingNewline:envListStrategy:managedPreferencesDomain:extraKeys:)`` in SwiftUI targets), and Rigging synthesizes multi-layer source loading, two-phase batched secret resolution, `$field` provenance inspection, and JSON Schema / `.env` documentation generation at compile time.
+`Rigging` is the declarative application-level settings and secret-hygiene layer for **Swift CLIs, macOS developer & automation tools, and Swift Server services** (with full Apple-platform, SwiftUI `@Rigged`, and macOS MDM support). Inspired by Python's `pydantic-settings` and built to complement `apple/swift-configuration` and `swift-argument-parser`, Rigging turns plain Swift structs annotated with ``Settings(envPrefix:envNestedDelimiter:envNestedMaxSplit:caseSensitive:envIgnoreEmpty:envNullStrings:dotEnvFiles:projectConfigFiles:xdgAppName:profile:secretsDirectory:secretsNestedSubdir:trimSecretTrailingNewline:envListStrategy:managedPreferencesDomain:extraKeys:)`` (or ``Rigged(envPrefix:envNestedDelimiter:envNestedMaxSplit:caseSensitive:envIgnoreEmpty:envNullStrings:dotEnvFiles:projectConfigFiles:xdgAppName:profile:secretsDirectory:secretsNestedSubdir:trimSecretTrailingNewline:envListStrategy:managedPreferencesDomain:extraKeys:)`` in SwiftUI targets) into compile-time multi-layer configuration models with batched secret resolution, `$field` provenance inspection, and JSON Schema / `.env` documentation generation.
 
 `Rigging` automatically re-exports `RiggingCore`, so a single `import Rigging` provides every macro, configuration source, validator, secret container, and provenance type needed to define and load configuration models.
 
 ### Architecture & 8-Layer Cascade
 
-```mermaid
-flowchart TD
-    L1["1. CLI Flags & Init Overrides (--port, SettingOverride)"] --> Merge
-    L2["2. Process Environment (APP_DATABASE__PORT)"] --> Merge
-    L3["3. .env Cascade (.env -> .env.local)"] --> Merge
-    L4["4. Secrets Directory (/run/secrets/*)"] --> Merge
-    L5["5. Project Config (.app.json upward to .git + profiles)"] --> Merge
-    L6["6. User Config (~/.config/app/config.json + profiles)"] --> Merge
-    L7["7. Managed Policy (macOS MDM CFPreferences)"] --> Merge
-    L8["8. Swift Default Values (var port: Int = 8080)"] --> Merge
-    Merge["Merged RawConfigTree (Winning Origin + Shadowed Origins)"] --> Phase1
-    Phase1["Phase 1: Enqueue & Deduplicate @SecretSetting URIs"] --> Phase2
-    Phase2["Phase 2: Single-Batch SecretProvider Dispatch (op://, keychain://, bws://, pass://, sops://)"] --> Decode
-    Decode["Typed Decoding + Transforms + Exhaustive Validation + $field Provenance"]
+```text
+  Highest Priority
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ 1. CLI Flags & Init Overrides  (--port, SettingOverride)            │
+  │ 2. Process Environment         (APP_DATABASE__PORT)                 │
+  │ 3. .env File Cascade           (.env → .env.local, 1-based lines)   │
+  │ 4. Secrets Directory           (/run/secrets/*)                     │
+  │ 5. Project Config              (.app.json upward to .git + profile) │
+  │ 6. User Config                 (~/.config/app/config.* + profile)   │
+  │ 7. Managed Policy              (macOS MDM CFPreferences)            │
+  │ 8. Swift Default Values        (var port: Int = 8080)               │
+  └──────────────────────────────────┬──────────────────────────────────┘
+                                     ▼
+          Merged RawConfigTree (Winning Origin + Shadowed Origins)
+                                     │
+                                     ▼
+        Phase 1: Collect & Deduplicate @SecretSetting URIs Across Tree
+                                     │
+                                     ▼
+        Phase 2: Single-Batch SecretProvider Dispatch (1 Biometric Unlock)
+                 (op://, keychain://, bws://, bw://, pass://, sops://)
+                                     │
+                                     ▼
+      Typed Decoding + Transforms + Exhaustive Validation + $field Provenance
 ```
 
 ### Quick Example

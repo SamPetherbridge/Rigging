@@ -1,29 +1,42 @@
 # Rigging
 
-**Declarative multi-source settings, batched secret references, and configuration provenance for Swift 6.**
+**Declarative `@Settings` models, batched secret hygiene, and configuration provenance for Swift 6.**
 
-`Rigging` brings [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) ergonomics and defense-in-depth secret hygiene to Swift CLIs, macOS developer tools, iOS/macOS apps, and Swift Server services.
+`Rigging` is the application-level settings and secret-management layer for **Swift CLIs, macOS developer & automation tools, and Swift Server services** (with full Apple-platform, SwiftUI `@Rigged`, and macOS MDM support).
+
+Declare one typed Swift `struct` and get an 8-layer CLI → env → `.env` → config cascade, exhaustive fail-all-at-once startup validation, single-prompt 1Password & Keychain secret resolution, per-field `$field` provenance, and turnkey `config show` / `doctor` / `schema` / `init` commands—bringing [`pydantic-settings`](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) ergonomics and defense-in-depth secret hygiene natively to Swift 6.
 
 ---
 
-## Why Rigging?
+## What Sets Rigging Apart
 
-Swift already has two great building blocks in this space — [`swift-argument-parser`](https://github.com/apple/swift-argument-parser) for command-line flags and [`apple/swift-configuration`](https://github.com/apple/swift-configuration) for untyped runtime `ConfigReader` lookups — yet production CLIs, developer tools, and services still end up hand-rolling hundreds of lines of glue for the hardest parts of configuration:
+1. **Typed `@Settings` Models & Exhaustive Startup Validation** — Compile-time `swift-syntax` macros synthesize loading, schema export, and `$field` provenance with zero runtime `Mirror` reflection in `RiggingCore`. Instead of halting on the first missing key, Rigging collects *every* missing, invalid, unknown-key, secret-safety, and cross-field error in one pass with deterministic CLI exit codes (`2`, `4`, `6`).
+2. **Production Secret Hygiene by Construction** — Resolve `op://`, `keychain://`, `bws://`, `bw://`, `pass://`, `sops://`, `file://`, and `env://` references in deduplicated batches (**1 biometric unlock** per account), wrap payloads in leak-proof `Secret<T>`, block plaintext secrets in repo-committed config files, enforce `0600` file permissions, and materialize zero-wiped ephemeral `.p8`/PEM files via `withEphemeralFile`.
+3. **Built-In Operability & Provenance** — Inspect exactly where every value came from (`settings.$keyId.source`) and what it shadowed (`settings.$keyId.overriddenSources`), or mount `ConfigSubcommand<MySettings>` to give users `config show`, `config doctor`, `config schema`, and `config init` in one line.
 
-| Capability | Manual `ProcessInfo` / `Codable` | `apple/swift-configuration` | **`Rigging`** |
-|---|---|---|---|
-| Declarative typed Swift structs (`@Settings` / `@Rigged`) | Manual decoding boilerplate | Imperative key-by-key `reader.string(forKey:)` | **Compile-time `swift-syntax` macro synthesis** |
-| Non-clobbering CLI → Env → `.env` → Config cascade | Unset CLI defaults overwrite env/files | Provider ordering only | **8-layer cascade; `nil` CLI flags never clobber** |
-| Password-manager secret URIs (`op://`, `keychain://`, `bws://`, `pass://`, `sops://`) | Custom shell scripts per app | Not built-in | **Deduplicated two-phase batch engine (1 unlock)** |
-| Validation error reporting | `Codable` halts on the first error | Fails at individual read call sites | **Exhaustive single-pass multi-issue diagnostics (exit `2`/`4`/`6`)** |
-| Per-field provenance & shadowed origins (`$field`) | None | Access logging only | **`settings.$keyId.source` + `overriddenSources`** |
-| Secret redaction, `0600` checks & ephemeral `.p8`/PEM files | Easy to leak in `print`/`dump`/temp files | `isSecret` marker on reads | **`Secret<T>`, `DiagnosticRedactor`, git-config guard & `withEphemeralFile`** |
-| Operational CLI tooling (`show`, `doctor`, `schema`, `init`) | Hand-built per tool | None | **Drop-in `ConfigSubcommand<MySettings>`** |
-| External dependencies in core runtime | None | `swift-log`, `swift-service-lifecycle`, etc. | **`RiggingCore` & `RiggingTOML` have zero external deps** |
+---
 
-**Rigging composes directly with both ecosystems:**
-- **`RiggingArgumentParser`** binds `ParsableArguments` into the cascade (omitting unset `nil` optionals) and mounts a turnkey `config` subcommand group.
-- **`RiggingSwiftConfiguration`** bridges bidirectionally with `apple/swift-configuration` (`SwiftConfigurationSource` and `settings.asConfigReader()`), automatically flagging every `@SecretSetting` with `isSecret: true` so `AccessLogger` redacts secrets in traces.
+## How Rigging Fits with Apple's Ecosystem
+
+Swift already has two great foundational packages:
+- [`swift-argument-parser`](https://github.com/apple/swift-argument-parser) parses command-line flags and subcommands.
+- [`apple/swift-configuration`](https://github.com/apple/swift-configuration) provides a standard `ConfigReader` / `ConfigProvider` abstraction with typed reads, file/env/CLI providers, secret markers, access reporting, and hot reloading—ideal for decoupling libraries from where configuration lives.
+
+**Rigging complements both as the opinionated application & CLI settings layer on top**—and bridges cleanly with them in both directions:
+
+| Capability | `apple/swift-configuration` | **`Rigging`** |
+|---|---|---|
+| Primary role | Library & runtime `ConfigReader` provider abstraction | Declarative application/CLI settings schema, validation & secret hygiene |
+| Configuration model | Imperative key-by-key typed reads (`reader.string(forKey:)`) | Compile-time `@Settings` / `@Rigged` Swift structs with defaults & nesting |
+| Startup validation | Evaluated at individual read call sites | Exhaustive single-pass validation (field + cross-field + unknown keys, exit `2`/`4`/`6`) |
+| Project & CLI layering | Provider ordering (`CommandLineArgumentsProvider`, `FileProvider`, etc.) | Non-clobbering `ParsableArguments` bridge (`nil` flags never shadow env), `.env` line tracking, upward `.git` discovery & `profiles` |
+| Secret manager resolution | `SecretsSpecifier` + `AccessReporter` redaction; custom providers | Built-in batched `op://` (1 unlock), in-process `keychain://`, `bws://`/`bw://`, `pass://`, `sops://`, `0600` checks, repo-plaintext guard & `withEphemeralFile` |
+| Provenance & CLI ops | `AccessReporter` access tracing | Per-field `$field.source` + `overriddenSources` and turnkey `config show` / `doctor` / `schema` / `init` |
+| Schema & template export | Manual | Generated Draft 2020-12 JSON Schema, `.env.example`, and Markdown docs from Swift types & `///` comments |
+
+**First-class bridges:**
+- **`RiggingArgumentParser`** binds `ParsableArguments` into the cascade without unset defaults clobbering env/files, and mounts `ConfigSubcommand<MySettings>`.
+- **`RiggingSwiftConfiguration`** bridges bidirectionally: consume any upstream `ConfigProvider` via `SwiftConfigurationSource`, or export validated, secret-resolved settings as a standard `ConfigReader` (`settings.asConfigReader()`) with `isSecret: true` preserved on every `@SecretSetting`.
 
 ---
 
@@ -33,7 +46,7 @@ Add `Rigging` to your `Package.swift` (Swift 6.2+, macOS 15+ / iOS 18+ / tvOS 18
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.2.0"),
+    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.3.0"),
 ],
 targets: [
     .executableTarget(
@@ -57,21 +70,23 @@ targets: [
 
 ### Modular Products
 
-Link only what your binary needs — `RiggingCore` and `RiggingTOML` depend exclusively on `Foundation`:
+Link only the products your binary needs—`RiggingCore` and `RiggingTOML` have **zero external link/runtime dependencies** (`Foundation` only):
 
-| Product | External Dependencies | Purpose |
+| Product | Target Dependencies | Purpose |
 |---|---|---|
-| `Rigging` | `swift-syntax` *(macro plugin)* | `@Settings`, `@Rigged`, `@Setting`, `@SecretSetting`, `@NestedSettings` |
+| `Rigging` | `RiggingCore` + `swift-syntax` *(macro plugin)* | `@Settings`, `@Rigged`, `@Setting`, `@SecretSetting`, `@NestedSettings` |
 | `RiggingCore` | **None** (`Foundation` only) | Cascade engine, `.env` / JSON / plist / MDM / secrets-dir sources, `Secret<T>`, validators, JSON Schema & `.env` exporters |
-| `RiggingOnePassword` | **None** | Batched `op://` resolution (`op inject` pipe & 1Password Connect REST API) |
-| `RiggingKeychain` | **None** (`Security.framework`) | Direct in-process `keychain://` lookups with zero subprocesses |
-| `RiggingBitwarden` | **None** | `bws://` (Secrets Manager) & `bw://` (Vault CLI) secret resolution |
-| `RiggingUnixPass` | **None** | `pass://` (`~/.password-store`) & `sops://` (RFC 6901 JSON Pointer) resolution |
-| `RiggingTOML` | **None** | Pure-Swift TOML v1.0 parser & `TOMLProjectConfigSource` / `TOMLUserConfigSource` |
-| `RiggingYAML` | `Yams` | YAML project/user config sources with `profiles` & `<<` merge-key support |
-| `RiggingArgumentParser` | `swift-argument-parser` | Non-clobbering `ParsableArguments` bridge & turnkey `ConfigSubcommand` |
-| `RiggingSwiftConfiguration` | `apple/swift-configuration` | Bidirectional `ConfigProvider` / `ConfigReader` adapter |
-| `RiggingTesting` | **None** | Hermetic `SettingsContext.inMemory`, `InMemoryFileSystem`, and mock providers |
+| `RiggingOnePassword` | `RiggingCore` only | Batched `op://` resolution (`op inject` pipe & 1Password Connect REST API) |
+| `RiggingKeychain` | `RiggingCore` + `Security.framework` | Direct in-process `keychain://` lookups with zero subprocesses |
+| `RiggingBitwarden` | `RiggingCore` only | `bws://` (Secrets Manager) & `bw://` (Vault CLI) secret resolution |
+| `RiggingUnixPass` | `RiggingCore` only | `pass://` (`~/.password-store`) & `sops://` (RFC 6901 JSON Pointer) resolution |
+| `RiggingTOML` | `RiggingCore` only | Pure-Swift TOML v1.0 parser & `TOMLProjectConfigSource` / `TOMLUserConfigSource` |
+| `RiggingYAML` | `RiggingCore` + `Yams` | YAML project/user config sources with `profiles` & `<<` merge-key support |
+| `RiggingArgumentParser` | `RiggingCore` + `swift-argument-parser` | Non-clobbering `ParsableArguments` bridge & turnkey `ConfigSubcommand` |
+| `RiggingSwiftConfiguration` | `RiggingCore` + `apple/swift-configuration` | Bidirectional `ConfigProvider` / `ConfigReader` adapter |
+| `RiggingTesting` | `RiggingCore` only | Hermetic `SettingsContext.inMemory`, `InMemoryFileSystem`, and mock providers |
+
+> **Note on SwiftPM resolution:** Because all integration products live in one package manifest, SwiftPM fetches the package-level dependencies (`swift-syntax`, `swift-argument-parser`, `swift-configuration`, `Yams`, and `swift-docc-plugin`) during dependency resolution, while your targets only compile and link the products you explicitly depend on.
 
 ---
 
@@ -136,6 +151,11 @@ public struct ASCSettings: Sendable, Equatable {
     @NestedSettings
     public var signing: SigningSettings = .init()
 
+    /// Register default secret providers once for `load()`, `load(cliArguments:)`, and `ConfigSubcommand`
+    public static var defaultSecretProviders: [any SecretProvider] {
+        [.file(), .env(), .onePassword(), .keychain()]
+    }
+
     public static func validate(_ settings: Self) -> [ValidationIssue] {
         if !settings.readOnly && settings.signing.teamId == nil {
             return [
@@ -150,16 +170,17 @@ public struct ASCSettings: Sendable, Equatable {
 }
 ```
 
-> **SwiftUI Apps:** When importing `Rigging` alongside `SwiftUI`, annotate models with `@Rigged(...)` instead of `@Settings(...)` to avoid colliding with `SwiftUI.Settings`.
+> **SwiftUI & Apple Apps:** When importing `Rigging` alongside `SwiftUI`, annotate models with `@Rigged(...)` instead of `@Settings(...)` to avoid colliding with `SwiftUI.Settings`.
 
 Load settings asynchronously with deduplicated, single-batch secret resolution:
 
 ```swift
-let settings = try await ASCSettings.load(
-    secretProviders: [
-        .onePassword(),
-        .keychain(),
-    ]
+// Uses ASCSettings.defaultSecretProviders automatically:
+let settings = try await ASCSettings.load()
+
+// Or override providers per call (include `.file()` / `.env()` if using file:// or env:// URIs):
+let customSettings = try await ASCSettings.load(
+    secretProviders: [.file(), .env(), .onePassword(), .keychain()]
 )
 ```
 
@@ -182,7 +203,7 @@ Unlike `Codable` (which halts on the first `DecodingError`), `Rigging` evaluates
 
 - **`2`** — Missing required setting, type/validator mismatch, unknown key (`extraKeys: .forbid`), or cross-field failure
 - **`4`** — Unsafe secret storage (`0644` key file, world-writable binary, or literal secret committed in a project config file)
-- **`6`** — External secret provider failure (missing Keychain item, expired 1Password session, or unreachable Connect server)
+- **`6`** — External secret provider failure (missing Keychain item, expired 1Password session, rate limit, or unreachable Connect server)
 
 ---
 
@@ -197,8 +218,8 @@ Any `@SecretSetting` (or `@Setting(resolveSecrets: true)`) transparently derefer
 | `bws://<uuid>` / `bw://<id>/field` | `BitwardenProvider` (`.bitwarden()`) | Bitwarden Secrets Manager (`bws`) or Vault (`bw`) CLI |
 | `pass://team/prod/api-key[#key]` | `UnixPassProvider` (`.unixPass()`) | `pass show` (`~/.password-store` line, `#full`, `#line:N`, or `#key`) |
 | `sops://secrets.enc.json#/db/pass` | `SOPSProvider` (`.sops()`) | `sops --decrypt` + in-memory RFC 6901 JSON Pointer |
-| `file:///abs/path` or `@~/.keys/Auth.p8` | `FileSecretProvider` *(built-in)* | Enforces `0600` POSIX permissions prior to reading |
-| `env://PROD_API_KEY` | `IndirectEnvProvider` *(built-in)* | Safe config-file indirection to environment variables |
+| `file:///abs/path` or `@~/.keys/Auth.p8` | `FileSecretProvider` (`.file()`, *built-in*) | Enforces `0600` POSIX permissions prior to reading |
+| `env://PROD_API_KEY` | `IndirectEnvProvider` (`.env()`, *built-in*) | Safe config-file indirection to environment variables |
 
 ### Safe Secret Consumption & `withEphemeralFile`
 
@@ -232,7 +253,7 @@ print(settings.$keyId.source)
 // environment ASC_KEY_ID
 
 print(settings.$keyId.overriddenSources)
-// [project config /repo/.asc.json (keyId)]
+// [project config /repo/.asc.json → keyId]
 
 print(settings.$privateKey.valueSummary)
 // **********
@@ -244,7 +265,7 @@ print(settings.provenanceReport().formattedTable())
 
 ## `RiggingArgumentParser`
 
-Bind `swift-argument-parser` options directly to `@Settings` and mount a turnkey `config` subcommand group:
+Bind `swift-argument-parser` options directly to `@Settings` and mount a turnkey `config` subcommand group. Both `load(cliArguments:)` and `ConfigSubcommand` automatically honor `ASCSettings.defaultSecretProviders`:
 
 ```swift
 import ArgumentParser
@@ -293,12 +314,11 @@ Bridge `Rigging` bidirectionally with `apple/swift-configuration` (`1.0+`):
 ```swift
 import Configuration
 import Rigging
-import RiggingOnePassword
 import RiggingSwiftConfiguration
 
 // Direction B: Vend validated, secret-resolved Rigging settings as a standard Apple ConfigReader.
-// Every @SecretSetting is marked `isSecret: true` so AccessLogger automatically redacts secrets!
-let settings = try await ASCSettings.load(secretProviders: [.onePassword()])
+// Every @SecretSetting is marked `isSecret: true` so AccessReporter automatically redacts secrets!
+let settings = try await ASCSettings.load()
 let reader: ConfigReader = settings.asConfigReader()
 let teamId = reader.scoped(to: "signing").string(forKey: "team-id")
 
@@ -350,7 +370,7 @@ import Testing
 Full multi-module **Apple DocC** reference documentation and conceptual guides (*Getting Started with Rigging*, *Secrets and Security Hygiene*, *Provenance and Operational Debugging*, and *Migrating from Python pydantic-settings*) are included across all 11 library targets:
 
 - **In Xcode:** Open `Package.swift` and choose **Product → Build Documentation** (`⌃⇧⌘D`).
-- **From the CLI:** Run `swift package generate-documentation --target Rigging` (configured for multi-target hosting via [`.spi.yml`](.spi.yml)).
+- **From the CLI:** Run `swift package generate-documentation --target Rigging` (configured for multi-target Swift Package Index hosting via [`.spi.yml`](.spi.yml)).
 - **Architecture & Threat Model:** See [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) and [`SECURITY.md`](SECURITY.md).
 
 ---
@@ -363,4 +383,4 @@ Full multi-module **Apple DocC** reference documentation and conceptual guides (
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE). Copyright © 2026 Peth Pty Ltd.

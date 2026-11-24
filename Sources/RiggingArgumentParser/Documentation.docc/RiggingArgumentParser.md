@@ -6,7 +6,7 @@ Bridge `swift-argument-parser` options, flags, and operational `config` subcomma
 
 `RiggingArgumentParser` solves the classic CLI configuration clobbering problem (`@Flag var readOnly = false` silently overriding `APP_READ_ONLY=true` or `"readOnly": true` in a config file). By declaring CLI options as `Optional` (such as `@Option var host: String?` or `@Flag(inversion: .prefixedNo) var readOnly: Bool?`), `RiggingArgumentParser` emits overrides **only** for flags explicitly supplied on the command line, preserving exact CLI flag provenance (such as `--no-read-only` or `--enable-telemetry`).
 
-In addition, ``ConfigSubcommand`` (aliased as ``SettingsCommandGroup``) provides a turnkey `config` subcommand group (`show`, `doctor`, `schema`, and `init`) that you can mount in any `ParsableCommand` or `AsyncParsableCommand` in a single line.
+In addition, ``ConfigSubcommand`` (aliased as ``SettingsCommandGroup``) provides a turnkey `config` subcommand group (`show`, `doctor`, `schema`, and `init`) that you can mount in any `ParsableCommand` or `AsyncParsableCommand` in a single line. Both `RiggedSettings.load(cliArguments:)` and ``ConfigSubcommand`` automatically honor your model's `defaultSecretProviders` (such as `.onePassword()` and `.keychain()`).
 
 ### Explicit-Only CLI Overrides
 

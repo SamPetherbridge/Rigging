@@ -1,6 +1,6 @@
 # Rigging — Technical Specification
 
-`Rigging` is a Swift 6 typed configuration, validation, provenance, and leak-proof secret management framework inspired by `pydantic-settings`, built natively for Swift CLIs, daemons, server applications, and Apple platform apps.
+`Rigging` is a Swift 6 declarative configuration, exhaustive validation, provenance, and leak-proof secret management framework built for Swift CLIs, macOS developer & automation tools, and Swift Server services (with full Apple-platform, SwiftUI `@Rigged`, and macOS MDM support). Inspired by `pydantic-settings`, it complements `apple/swift-configuration` and `swift-argument-parser` as the opinionated application-level settings layer.
 
 ---
 

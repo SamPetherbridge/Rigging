@@ -18,7 +18,7 @@ Add `Rigging` to your `Package.swift` dependencies, along with any optional secr
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.2.0"),
+    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.3.0"),
 ],
 targets: [
     .executableTarget(
@@ -135,22 +135,21 @@ Configuration files can also define named `profiles` overlays:
 
 ## Loading Settings and Handling Validation Errors
 
-Load your configuration asynchronously at startup and register any external secret providers you want enabled:
+Register external secret providers once on your settings type via `defaultSecretProviders` (so `load()`, `load(cliArguments:)`, and `ConfigSubcommand` all share them), or pass `secretProviders:` directly to `load(...)`:
 
 ```swift
 import Rigging
 import RiggingKeychain
 import RiggingOnePassword
 
+extension ServiceSettings {
+    public static var defaultSecretProviders: [any SecretProvider] {
+        [.file(), .env(), .onePassword(), .keychain()]
+    }
+}
+
 do {
-    let settings = try await ServiceSettings.load(
-        secretProviders: [
-            FileSecretProvider(),
-            IndirectEnvProvider(),
-            .onePassword(),
-            .keychain(),
-        ]
-    )
+    let settings = try await ServiceSettings.load()
     print("Connected to \(settings.database.host):\(settings.database.port)")
 } catch let error as SettingsValidationError {
     FileHandle.standardError.write(Data((error.description + "\n").utf8))

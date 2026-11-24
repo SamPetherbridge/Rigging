@@ -59,9 +59,9 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the project maintainers by opening a private report via GitHub or
-contacting the repository owner directly. All complaints will be reviewed and
-investigated promptly and fairly.
+reported to the project maintainers responsible for enforcement at
+<sam@peth.me>. All complaints will be reviewed and investigated promptly and
+fairly.
 
 All community leaders are obligated to respect the privacy and security of the
 reporter of any incident.

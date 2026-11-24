@@ -129,7 +129,7 @@ swift package --allow-writing-to-directory /tmp/docc \
    }
    ```
 2. Map failures to `SecretResolutionError` (`exitCode = 6` for provider/auth/missing-item errors; `exitCode = 4` for unsafe permissions) and scrub any raw error strings with `context.redactor.scrub(...)`.
-3. If invoking a subprocess, always resolve the binary via `ProcessSubprocessRunner.resolveExecutable(...)` and `context.subprocessRunner.run(...)` — never `/bin/sh -c`.
+3. If invoking a subprocess, always resolve the binary via `ProcessSubprocessRunner.resolveTrustedExecutable(...)` and `context.subprocessRunner.run(...)` — never `/bin/sh -c`.
 
 ---
 
