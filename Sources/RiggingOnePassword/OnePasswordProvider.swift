@@ -40,6 +40,7 @@ public struct OnePasswordConnectConfiguration: Sendable, Equatable {
     }
 }
 
+#if canImport(Darwin) || canImport(FoundationNetworking)
 /// Injectable HTTP transport used by ``OnePasswordProvider`` when operating in 1Password Connect REST mode.
 public protocol OnePasswordHTTPTransport: Sendable {
     /// Executes an HTTP request and returns the response payload and HTTP metadata.
@@ -120,6 +121,7 @@ public struct ClosureOnePasswordHTTPTransport: OnePasswordHTTPTransport, Sendabl
         try await handler(request)
     }
 }
+#endif
 
 // MARK: - OnePasswordProvider
 
@@ -151,6 +153,7 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
     /// Optional explicit 1Password Connect Server configuration.
     public let connect: OnePasswordConnectConfiguration?
 
+    #if canImport(Darwin) || canImport(FoundationNetworking)
     /// HTTP transport used when operating in 1Password Connect REST mode.
     public let httpTransport: any OnePasswordHTTPTransport
 
@@ -186,6 +189,37 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         self.connect = connect
         self.httpTransport = httpTransport
     }
+    #else
+    /// Creates a batched 1Password secret provider on platforms without `FoundationNetworking` (such as WASI).
+    ///
+    /// - Parameters:
+    ///   - account: Optional default 1Password account shorthand, sign-in URL, or UUID.
+    ///   - serviceAccountToken: Optional Service Account token forwarded as `OP_SERVICE_ACCOUNT_TOKEN`.
+    ///   - executablePath: Explicit absolute path to a trusted `op` binary. When `nil`, `searchDirectories` are checked.
+    ///   - searchDirectories: Trusted absolute system directories searched for `op`.
+    ///   - timeout: Maximum execution duration per `op` subprocess invocation. Defaults to 30 seconds.
+    ///   - connect: Explicit 1Password Connect REST configuration.
+    public init(
+        account: String? = nil,
+        serviceAccountToken: Secret<String>? = nil,
+        executablePath: String? = nil,
+        searchDirectories: [String] = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ],
+        timeout: Duration? = .seconds(30),
+        connect: OnePasswordConnectConfiguration? = nil
+    ) {
+        self.account = account
+        self.serviceAccountToken = serviceAccountToken
+        self.executablePath = executablePath
+        self.searchDirectories = searchDirectories
+        self.timeout = timeout
+        self.connect = connect
+    }
+    #endif
 
     /// Resolves a deduplicated batch of `op://` secret references in minimal unlock passes.
     ///
@@ -235,11 +269,19 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
 
         // Route to 1Password Connect REST API when configured explicitly or via environment variables.
         if let connectConfig = try resolveConnectConfiguration(from: context) {
+            #if canImport(Darwin) || canImport(FoundationNetworking)
             return try await resolveViaConnectServer(
                 entries: uniqueEntries,
                 connect: connectConfig,
                 context: context
             )
+            #else
+            _ = connectConfig
+            throw SecretResolutionError.providerFailed(
+                scheme: "op",
+                message: "1Password Connect HTTP transport is unavailable on this platform (no FoundationNetworking/URLSession)."
+            )
+            #endif
         }
 
         return try await resolveViaCLI(entries: uniqueEntries, context: context)
@@ -579,6 +621,7 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         let files: [ConnectFile]?
     }
 
+    #if canImport(Darwin) || canImport(FoundationNetworking)
     private func resolveViaConnectServer(
         entries: [(reference: SecretReference, opRef: OnePasswordSecretReference)],
         connect: OnePasswordConnectConfiguration,
@@ -917,6 +960,7 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         allowed.remove(charactersIn: "/?#")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
+    #endif
 
     // MARK: - Trust, Validation, & Safe Error Classification
 
@@ -1224,6 +1268,7 @@ extension SecretProvider where Self == OnePasswordProvider {
         )
     }
 
+    #if canImport(Darwin) || canImport(FoundationNetworking)
     /// Creates a 1Password Connect REST Server provider resolving `op://` references over HTTP
     /// with zero `op` CLI binary dependency.
     ///
@@ -1242,4 +1287,5 @@ extension SecretProvider where Self == OnePasswordProvider {
             httpTransport: httpTransport
         )
     }
+    #endif
 }

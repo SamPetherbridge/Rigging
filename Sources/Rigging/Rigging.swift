@@ -547,7 +547,7 @@ extension RiggedSettings {
         cliOverrides: [SettingOverride] = [],
         environment: [String: String] = ProcessInfo.processInfo.environment,
         workingDirectory: String = FileManager.default.currentDirectoryPath,
-        homeDirectory: String = NSHomeDirectory(),
+        homeDirectory: String = SettingsContext.defaultHomeDirectory,
         fileSystem: any FileSystem = LocalFileSystem(),
         subprocessRunner: any SubprocessRunner = ProcessSubprocessRunner(),
         secretProviders: [any SecretProvider] = Self.defaultSecretProviders,

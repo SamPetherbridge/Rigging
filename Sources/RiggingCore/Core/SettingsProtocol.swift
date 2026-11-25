@@ -1,10 +1,17 @@
 import Foundation
+import Synchronization
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(Android)
+import Android
+#elseif canImport(WASILibc)
+import WASILibc
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 
 // MARK: - Provenance & Origin
@@ -331,16 +338,23 @@ public struct LocalFileSystem: FileSystem, Sendable {
     }
 
     /// Returns the 12-bit POSIX permission mask (`mode & 0o7777`) for the local item at `path`.
+    ///
+    /// On platforms that do not expose POSIX mode bits via `FileManager` or `stat` (such as Windows
+    /// and WASI), existing files default to owner-only semantics (`0o600` for files, `0o700` for directories).
     public func posixPermissions(atPath path: String) throws -> UInt16 {
         let attrs = try FileManager.default.attributesOfItem(atPath: path)
         if let number = attrs[.posixPermissions] as? NSNumber {
             return number.uint16Value & 0o7777
         }
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
         var st = stat()
         guard stat(path, &st) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .ENOENT)
         }
         return UInt16(truncatingIfNeeded: st.st_mode) & 0o7777
+        #else
+        return isDirectory(atPath: path) ? 0o700 : 0o600
+        #endif
     }
 
     /// Returns whether the local file at `path` has execute permissions for the current user.
@@ -490,6 +504,25 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
     /// Creates a production subprocess runner.
     public init() {}
 
+    private static func isAbsoluteExecutablePath(_ path: String) -> Bool {
+        if path.hasPrefix("/") {
+            return true
+        }
+        #if os(Windows)
+        if path.hasPrefix("\\\\") {
+            return true
+        }
+        let chars = Array(path)
+        if chars.count >= 3,
+           chars[0].isASCII && chars[0].isLetter,
+           chars[1] == ":",
+           chars[2] == "\\" || chars[2] == "/" {
+            return true
+        }
+        #endif
+        return false
+    }
+
     /// Verifies that `executablePath` is an absolute, existing, non-directory, executable file
     /// that is not world-writable (`mode & 0o002 == 0`).
     ///
@@ -501,7 +534,7 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
         atPath executablePath: String,
         fileSystem: any FileSystem = LocalFileSystem()
     ) throws {
-        guard executablePath.hasPrefix("/") else {
+        guard isAbsoluteExecutablePath(executablePath) else {
             throw SubprocessSecurityError.relativeExecutablePath(executablePath)
         }
         guard !executablePath.contains("\0") else {
@@ -549,12 +582,21 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
             return explicitPath
         }
 
-        for dir in searchDirectories where dir.hasPrefix("/") {
-            let candidate = dir.hasSuffix("/") ? "\(dir)\(binaryName)" : "\(dir)/\(binaryName)"
+        for dir in searchDirectories where isAbsoluteExecutablePath(dir) {
+            let candidate = (dir.hasSuffix("/") || dir.hasSuffix("\\")) ? "\(dir)\(binaryName)" : "\(dir)/\(binaryName)"
             if fileSystem.fileExists(atPath: candidate) {
                 try verifyExecutableTrust(atPath: candidate, fileSystem: fileSystem)
                 return candidate
             }
+            #if os(Windows)
+            if !binaryName.lowercased().hasSuffix(".exe") {
+                let exeCandidate = "\(candidate).exe"
+                if fileSystem.fileExists(atPath: exeCandidate) {
+                    try verifyExecutableTrust(atPath: exeCandidate, fileSystem: fileSystem)
+                    return exeCandidate
+                }
+            }
+            #endif
         }
 
         throw SubprocessSecurityError.executableNotFound(binaryName)
@@ -579,8 +621,8 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
     ) async throws -> SubprocessResult {
         try Self.verifyExecutableTrust(atPath: executablePath)
 
-        #if os(macOS) || os(Linux)
-        return try await runPOSIXProcess(
+        #if os(macOS) || os(Linux) || os(Windows)
+        return try await runPlatformProcess(
             executablePath: executablePath,
             arguments: arguments,
             environment: environment,
@@ -589,13 +631,13 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
         )
         #else
         throw SubprocessSecurityError.unsupportedPlatform(
-            "External subprocess execution is only available on macOS and Linux."
+            "External subprocess execution is only available on macOS, Linux, and Windows."
         )
         #endif
     }
 
-    #if os(macOS) || os(Linux)
-    private func runPOSIXProcess(
+    #if os(macOS) || os(Linux) || os(Windows)
+    private func runPlatformProcess(
         executablePath: String,
         arguments: [String],
         environment: [String: String]?,
@@ -643,13 +685,13 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
             stderrPipe.fileHandleForReading.readDataToEndOfFile()
         }
 
-        let timedOutFlag = LockedFlag()
+        let timedOutFlag = Mutex(false)
         let timeoutTask: Task<Void, Never>?
         if let timeout {
             timeoutTask = Task {
                 try? await Task.sleep(for: timeout)
                 if !Task.isCancelled && process.isRunning {
-                    timedOutFlag.setTrue()
+                    timedOutFlag.withLock { $0 = true }
                     process.terminate()
                 }
             }
@@ -667,7 +709,7 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
         let stdoutData = await stdoutTask.value
         let stderrData = await stderrTask.value
 
-        if let timeout, timedOutFlag.value {
+        if let timeout, timedOutFlag.withLock({ $0 }) {
             throw SubprocessSecurityError.timedOut(executablePath: executablePath, duration: timeout)
         }
 
@@ -678,23 +720,6 @@ public struct ProcessSubprocessRunner: SubprocessRunner, Sendable {
         )
     }
     #endif
-}
-
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var flag = false
-
-    var value: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return flag
-    }
-
-    func setTrue() {
-        lock.lock()
-        flag = true
-        lock.unlock()
-    }
 }
 
 // MARK: - SettingsConfiguration & SettingsContext
@@ -851,12 +876,27 @@ public struct SettingsContext: Sendable {
     /// Optional TTL cache shared across ``RiggedSettings/load(context:overrides:)`` or ``SettingsWatcher`` reloads.
     public var secretCache: SecretResolutionCache?
 
+    /// Resolves the current platform's default user home directory cleanly across Apple platforms,
+    /// Linux, Windows, Android, and WebAssembly (WASI).
+    public static var defaultHomeDirectory: String {
+        #if os(WASI)
+        return ProcessInfo.processInfo.environment["HOME"] ?? "/"
+        #elseif os(Windows)
+        if let userProfile = ProcessInfo.processInfo.environment["USERPROFILE"], !userProfile.isEmpty {
+            return userProfile
+        }
+        return NSHomeDirectory()
+        #else
+        return NSHomeDirectory()
+        #endif
+    }
+
     /// Creates an execution context for loading settings.
     ///
     /// - Parameters:
     ///   - environment: Environment variable dictionary. Defaults to `ProcessInfo.processInfo.environment`.
     ///   - workingDirectory: Base path for relative files. Defaults to `FileManager.default.currentDirectoryPath`.
-    ///   - homeDirectory: User home directory path. Defaults to `NSHomeDirectory()`.
+    ///   - homeDirectory: User home directory path. Defaults to ``defaultHomeDirectory``.
     ///   - cliOverrides: Initial CLI or programmatic overrides. Defaults to `[]`.
     ///   - fileSystem: Filesystem implementation. Defaults to ``LocalFileSystem``.
     ///   - subprocessRunner: Subprocess runner implementation. Defaults to ``ProcessSubprocessRunner``.
@@ -866,7 +906,7 @@ public struct SettingsContext: Sendable {
     public init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         workingDirectory: String = FileManager.default.currentDirectoryPath,
-        homeDirectory: String = NSHomeDirectory(),
+        homeDirectory: String = SettingsContext.defaultHomeDirectory,
         cliOverrides: [SettingOverride] = [],
         fileSystem: any FileSystem = LocalFileSystem(),
         subprocessRunner: any SubprocessRunner = ProcessSubprocessRunner(),

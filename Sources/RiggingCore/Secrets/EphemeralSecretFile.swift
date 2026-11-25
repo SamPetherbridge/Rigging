@@ -5,6 +5,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(Android)
+import Android
 #endif
 
 /// Errors thrown when materializing or cleaning up a temporary secret file on disk.
@@ -143,7 +145,7 @@ extension Secret where Value == [UInt8] {
     }
 }
 
-// MARK: - Hardened POSIX Materialization & Zeroing Cleanup
+// MARK: - Hardened Materialization & Zeroing Cleanup
 
 private func materializeEphemeralSecretFile<R>(
     bytes: [UInt8],
@@ -155,6 +157,32 @@ private func materializeEphemeralSecretFile<R>(
     try validateAffix(prefix)
     try validateAffix(suffix)
 
+    #if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
+    return try await materializePOSIXEphemeralSecretFile(
+        bytes: bytes,
+        prefix: prefix,
+        suffix: suffix,
+        permissions: permissions,
+        body: body
+    )
+    #else
+    return try await materializeFoundationEphemeralSecretFile(
+        bytes: bytes,
+        prefix: prefix,
+        suffix: suffix,
+        body: body
+    )
+    #endif
+}
+
+#if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
+private func materializePOSIXEphemeralSecretFile<R>(
+    bytes: [UInt8],
+    prefix: String,
+    suffix: String,
+    permissions: UInt16,
+    body: @Sendable (URL) async throws -> R
+) async throws -> R {
     let baseTmpDir: String = {
         let candidate = ProcessInfo.processInfo.environment["TMPDIR"]
             .flatMap { $0.isEmpty ? nil : $0 } ?? NSTemporaryDirectory()
@@ -182,7 +210,7 @@ private func materializeEphemeralSecretFile<R>(
     var fileCreated = false
 
     defer {
-        scrubAndRemoveEphemeralArtifacts(
+        scrubAndRemovePOSIXEphemeralArtifacts(
             filePath: filePath,
             dirPath: dirPath,
             expectedByteCount: writtenByteCount,
@@ -215,25 +243,6 @@ private func materializeEphemeralSecretFile<R>(
     return try await body(fileURL)
 }
 
-private func validateAffix(_ affix: String) throws {
-    if affix.utf8.contains(0) || affix.contains("/") || affix.contains("..") {
-        throw EphemeralSecretFileError.invalidFileNameAffix(affix)
-    }
-}
-
-private func generateRandomHex(byteCount: Int) -> String {
-    var generator = SystemRandomNumberGenerator()
-    let hexDigits: [Character] = Array("0123456789abcdef")
-    var result = ""
-    result.reserveCapacity(byteCount * 2)
-    for _ in 0..<byteCount {
-        let byte = UInt8.random(in: 0...255, using: &generator)
-        result.append(hexDigits[Int(byte >> 4)])
-        result.append(hexDigits[Int(byte & 0x0F)])
-    }
-    return result
-}
-
 private func writeAllBytes(_ bytes: [UInt8], to fd: Int32) throws {
     guard !bytes.isEmpty else { return }
     try bytes.withUnsafeBytes { rawBuffer in
@@ -252,7 +261,7 @@ private func writeAllBytes(_ bytes: [UInt8], to fd: Int32) throws {
     }
 }
 
-private func scrubAndRemoveEphemeralArtifacts(
+private func scrubAndRemovePOSIXEphemeralArtifacts(
     filePath: String,
     dirPath: String,
     expectedByteCount: Int,
@@ -318,6 +327,81 @@ private func scrubAndRemoveEphemeralArtifacts(
         }
         _ = rmdir(dirPath)
     }
+}
+#else
+private func materializeFoundationEphemeralSecretFile<R>(
+    bytes: [UInt8],
+    prefix: String,
+    suffix: String,
+    body: @Sendable (URL) async throws -> R
+) async throws -> R {
+    let fm = FileManager.default
+    let dirURL = fm.temporaryDirectory.appendingPathComponent(
+        "rigging-secret.\(generateRandomHex(byteCount: 10))",
+        isDirectory: true
+    )
+    do {
+        try fm.createDirectory(at: dirURL, withIntermediateDirectories: true)
+    } catch {
+        throw EphemeralSecretFileError.directoryCreationFailed(errno: 1)
+    }
+
+    let fileURL = dirURL.appendingPathComponent(
+        "\(prefix)\(generateRandomHex(byteCount: 8))\(suffix)",
+        isDirectory: false
+    )
+    let writtenByteCount = bytes.count
+    var fileCreated = false
+
+    defer {
+        if fileCreated {
+            if let handle = try? FileHandle(forUpdating: fileURL) {
+                let fileLength = (try? handle.seekToEnd()) ?? UInt64(writtenByteCount)
+                let wipeLength = max(UInt64(writtenByteCount), fileLength)
+                try? handle.seek(toOffset: 0)
+                var remaining = wipeLength
+                let chunkSize: UInt64 = 4096
+                while remaining > 0 {
+                    let count = Int(min(chunkSize, remaining))
+                    try? handle.write(contentsOf: Data(repeating: 0, count: count))
+                    remaining -= UInt64(count)
+                }
+                try? handle.synchronize()
+                try? handle.close()
+            }
+            try? fm.removeItem(at: fileURL)
+        }
+        try? fm.removeItem(at: dirURL)
+    }
+
+    do {
+        try Data(bytes).write(to: fileURL, options: [.withoutOverwriting])
+        fileCreated = true
+    } catch {
+        throw EphemeralSecretFileError.fileWriteFailed(errno: 1)
+    }
+
+    return try await body(fileURL)
+}
+#endif
+
+private func validateAffix(_ affix: String) throws {
+    if affix.utf8.contains(0) || affix.contains("/") || affix.contains("\\") || affix.contains("..") {
+        throw EphemeralSecretFileError.invalidFileNameAffix(affix)
+    }
+}
+
+private func generateRandomHex(byteCount: Int) -> String {
+    var generator = SystemRandomNumberGenerator()
+    let hexDigits: [Character] = Array("0123456789abcdef")
+    var result = ""
+    result.reserveCapacity(byteCount * 2)
+    for _ in 0..<byteCount {
+        let byte = UInt8.random(in: 0...255, using: &generator)
+        result.append(hexDigits[Int(byte >> 4)])
+        result.append(hexDigits[Int(byte & 0x0F)])
+    }
+    return result
 }
 
 private func zeroMemory(_ bytes: inout [UInt8]) {

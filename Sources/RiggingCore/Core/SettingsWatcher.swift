@@ -8,6 +8,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(Android)
+import Android
 #endif
 
 /// Actor-isolated live configuration reloader for long-running services, daemons, and applications.
@@ -47,7 +49,7 @@ public actor SettingsWatcher<Settings: RiggedSettings> {
     private var dispatchSources: [any DispatchSourceFileSystemObject] = []
     #endif
 
-    #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl))
+    #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android))
     private var sighupSource: (any DispatchSourceSignal)?
     #endif
 
@@ -140,7 +142,7 @@ public actor SettingsWatcher<Settings: RiggedSettings> {
         }
         #endif
 
-        #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl))
+        #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android))
         if reloadOnSIGHUP {
             installSIGHUPSource()
         }
@@ -210,7 +212,7 @@ public actor SettingsWatcher<Settings: RiggedSettings> {
         dispatchSources.removeAll()
         #endif
 
-        #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl))
+        #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android))
         sighupSource?.cancel()
         sighupSource = nil
         #endif
@@ -282,7 +284,7 @@ public actor SettingsWatcher<Settings: RiggedSettings> {
     }
     #endif
 
-    #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl))
+    #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android))
     private func installSIGHUPSource() {
         guard sighupSource == nil else { return }
         _ = signal(SIGHUP, SIG_IGN)

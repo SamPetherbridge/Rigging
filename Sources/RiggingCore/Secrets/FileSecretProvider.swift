@@ -137,17 +137,11 @@ public struct FileSecretProvider: SecretProvider, Sendable {
         workingDirectory: String,
         homeDirectory: String
     ) -> String {
-        let homeExpanded = expandHome(rawPath, homeDirectory: homeDirectory)
-        let combined: String
-        if homeExpanded.hasPrefix("/") {
-            combined = homeExpanded
-        } else {
-            let cleanWorkDir = workingDirectory.hasSuffix("/") && workingDirectory.count > 1
-                ? String(workingDirectory.dropLast())
-                : workingDirectory
-            combined = "\(cleanWorkDir)/\(homeExpanded)"
-        }
-        return normalizeLexicalPath(combined)
+        SourcePathResolver.resolve(
+            path: rawPath,
+            workingDirectory: workingDirectory,
+            homeDirectory: homeDirectory
+        )
     }
 
     /// Expands a leading `~` or `~/` prefix using `homeDirectory`.
@@ -157,40 +151,16 @@ public struct FileSecretProvider: SecretProvider, Sendable {
     ///   - homeDirectory: Home directory path (for example, `"/Users/jane"`).
     /// - Returns: Path with any leading tilde expanded.
     public static func expandHome(_ path: String, homeDirectory: String) -> String {
-        let cleanHome = homeDirectory.hasSuffix("/") && homeDirectory.count > 1
+        let cleanHome = (homeDirectory.hasSuffix("/") || homeDirectory.hasSuffix("\\")) && homeDirectory.count > 1
             ? String(homeDirectory.dropLast())
             : homeDirectory
         if path == "~" {
             return cleanHome
         }
-        if path.hasPrefix("~/") {
+        if path.hasPrefix("~/") || path.hasPrefix("~\\") {
             return "\(cleanHome)/\(path.dropFirst(2))"
         }
         return path
-    }
-
-    private static func normalizeLexicalPath(_ path: String) -> String {
-        let isAbsolute = path.hasPrefix("/")
-        var stack: [Substring] = []
-
-        for segment in path.split(separator: "/", omittingEmptySubsequences: true) {
-            if segment == "." {
-                continue
-            } else if segment == ".." {
-                if let last = stack.last, last != ".." {
-                    stack.removeLast()
-                } else if !isAbsolute {
-                    stack.append("..")
-                }
-            } else {
-                stack.append(segment)
-            }
-        }
-
-        if isAbsolute {
-            return "/" + stack.joined(separator: "/")
-        }
-        return stack.isEmpty ? "." : stack.joined(separator: "/")
     }
 }
 

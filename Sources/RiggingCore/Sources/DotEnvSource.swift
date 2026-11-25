@@ -117,6 +117,25 @@ public struct DotEnvSource: SettingsSource, Sendable {
 
 /// Lexical path normalization and tilde/relative-path resolution shared across file-based sources.
 enum SourcePathResolver {
+    static func isAbsolutePath(_ path: String) -> Bool {
+        if path.hasPrefix("/") {
+            return true
+        }
+        #if os(Windows)
+        if path.hasPrefix("\\\\") {
+            return true
+        }
+        let chars = Array(path)
+        if chars.count >= 3,
+           chars[0].isASCII && chars[0].isLetter,
+           chars[1] == ":",
+           chars[2] == "\\" || chars[2] == "/" {
+            return true
+        }
+        #endif
+        return false
+    }
+
     static func resolve(
         path: String,
         workingDirectory: String,
@@ -125,11 +144,11 @@ enum SourcePathResolver {
         if path == "~" {
             return normalizeLexicalPath(homeDirectory)
         }
-        if path.hasPrefix("~/") {
+        if path.hasPrefix("~/") || path.hasPrefix("~\\") {
             let suffix = String(path.dropFirst(2))
             return normalizeLexicalPath(joinPath(homeDirectory, suffix))
         }
-        if path.hasPrefix("/") {
+        if isAbsolutePath(path) {
             return normalizeLexicalPath(path)
         }
         return normalizeLexicalPath(joinPath(workingDirectory, path))
@@ -139,15 +158,36 @@ enum SourcePathResolver {
         if base.isEmpty { return component }
         if component.isEmpty { return base }
         if base == "/" { return "/\(component)" }
-        let cleanBase = base.hasSuffix("/") ? String(base.dropLast()) : base
-        let cleanComp = component.hasPrefix("/") ? String(component.dropFirst()) : component
+        let cleanBase = (base.hasSuffix("/") || base.hasSuffix("\\")) ? String(base.dropLast()) : base
+        let cleanComp = (component.hasPrefix("/") || component.hasPrefix("\\")) ? String(component.dropFirst()) : component
         return "\(cleanBase)/\(cleanComp)"
     }
 
     static func normalizeLexicalPath(_ path: String) -> String {
         guard !path.isEmpty else { return "." }
-        let isAbsolute = path.hasPrefix("/")
-        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        #if os(Windows)
+        let normalizedInput = path.replacingOccurrences(of: "\\", with: "/")
+        let chars = Array(normalizedInput)
+        if chars.count >= 2, chars[0].isASCII && chars[0].isLetter, chars[1] == ":" {
+            let drivePrefix = String(chars[0...1])
+            let remainder = String(normalizedInput.dropFirst(2))
+            let parts = remainder.split(separator: "/", omittingEmptySubsequences: true)
+            var stack: [Substring] = []
+            for part in parts {
+                if part == "." { continue }
+                if part == ".." {
+                    if !stack.isEmpty { stack.removeLast() }
+                } else {
+                    stack.append(part)
+                }
+            }
+            return "\(drivePrefix)/" + stack.joined(separator: "/")
+        }
+        #else
+        let normalizedInput = path
+        #endif
+        let isAbsolute = normalizedInput.hasPrefix("/")
+        let parts = normalizedInput.split(separator: "/", omittingEmptySubsequences: true)
         var stack: [Substring] = []
 
         for part in parts {
@@ -173,10 +213,24 @@ enum SourcePathResolver {
     static func parentDirectory(of normalizedAbsolutePath: String) -> String? {
         let clean = normalizeLexicalPath(normalizedAbsolutePath)
         guard clean != "/" && clean != "." else { return nil }
+        #if os(Windows)
+        let chars = Array(clean)
+        if chars.count == 3, chars[0].isASCII && chars[0].isLetter, chars[1] == ":", chars[2] == "/" {
+            return nil
+        }
+        #endif
         guard let slashIndex = clean.lastIndex(of: "/") else { return nil }
         if slashIndex == clean.startIndex {
             return "/"
         }
+        #if os(Windows)
+        let prefix = String(clean[..<slashIndex])
+        if prefix.count == 2, prefix.last == ":" {
+            return "\(prefix)/"
+        }
+        return prefix
+        #else
         return String(clean[..<slashIndex])
+        #endif
     }
 }

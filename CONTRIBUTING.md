@@ -26,7 +26,7 @@ Rigging (Umbrella: @_exported RiggingCore + Macro declarations)
 ### Non-Negotiable Rules
 1. **`RiggingCore` and `RiggingTOML` are strictly zero-dependency:** Never add external packages to `RiggingCore` or `RiggingTOML`. Any integration requiring an external parser, SDK, or framework belongs in an existing or new satellite target.
 2. **Strict Swift 6 Concurrency:** Every target builds under `swift-tools-version: 6.2` with complete `Sendable` checking. Prefer value types, `actor`s, or `Synchronization.Mutex` over `@unchecked Sendable`.
-3. **Zero-Warning Policy:** All targets and tests must compile with zero warnings under `-Xswiftc -warnings-as-errors` on both macOS and Linux (`Glibc` and `Musl`).
+3. **Zero-Warning Policy:** All targets and tests must compile with zero warnings under `-Xswiftc -warnings-as-errors` across Apple platforms, Linux (`Glibc` and `Musl`), Windows, Android, and WASI.
 4. **Hermetic Tests Only:** Never read/write the host user's real `$HOME`, login Keychain, or live `op` / `bw` / `pass` CLIs in tests. Use `RiggingTesting` (`SettingsContext.inMemory(...)`, `InMemoryFileSystem`, `MockSubprocessRunner`, `MockOnePasswordProvider`, `MockKeychainProvider`).
 
 ---

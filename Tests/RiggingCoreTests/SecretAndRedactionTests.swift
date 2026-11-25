@@ -8,6 +8,10 @@ import Testing
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Android)
+import Android
 #endif
 
 private struct SampleEncodedContainer: Codable, Equatable {
@@ -111,6 +115,7 @@ struct SecretAndRedactionTests {
             #expect(fileURL.lastPathComponent.hasPrefix("AuthKey_"))
             #expect(fileURL.lastPathComponent.hasSuffix(".p8"))
 
+            #if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
             var dirStat = stat()
             #expect(stat(dirPath, &dirStat) == 0)
             #expect(UInt16(dirStat.st_mode) & 0o777 == 0o700)
@@ -118,6 +123,7 @@ struct SecretAndRedactionTests {
             var fileStat = stat()
             #expect(stat(filePath, &fileStat) == 0)
             #expect(UInt16(fileStat.st_mode) & 0o777 == 0o600)
+            #endif
 
             let diskContents = try String(contentsOf: fileURL, encoding: .utf8)
             #expect(diskContents == TestFixtures.sampleP8PEM)
@@ -143,9 +149,11 @@ struct SecretAndRedactionTests {
                 let dirPath = fileURL.deletingLastPathComponent().path
                 capturedPaths.withLock { $0 = (dirPath, filePath) }
 
+                #if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
                 var fileStat = stat()
                 #expect(stat(filePath, &fileStat) == 0)
                 #expect(UInt16(fileStat.st_mode) & 0o777 == 0o400)
+                #endif
                 throw SimulatedToolFailure()
             }
         }
