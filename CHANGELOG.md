@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-25
+
+### Added
+
+- **Cross-Platform Support (Windows, Android, & WASI):**
+  - **`RiggingCore` & `Rigging`:** Add `Android`, `WASILibc`, and `WinSDK` platform guards, `SettingsContext.defaultHomeDirectory` (handling WASI and Windows `%USERPROFILE%`), Windows drive/UNC path normalization in `SourcePathResolver` and `FileSecretProvider`, `Foundation.Process` execution on Windows alongside macOS/Linux, `Mutex`-backed timeout state in `ProcessSubprocessRunner`, and a `Foundation`-backed zero-overwrite `withEphemeralFile` fallback on non-POSIX targets (Windows & WASI).
+  - **`RiggingOnePassword`:** Guard `URLSession` / `HTTPURLResponse` Connect REST transport behind `#if canImport(Darwin) || canImport(FoundationNetworking)` so `RiggingOnePassword` compiles cleanly on WASI.
+  - **`RiggingCoreTests`:** Add `Musl` and `Android` libc imports and guard POSIX `stat` mode assertions in `SecretAndRedactionTests` for Windows/WASI portability.
+- **Documentation:** Add Shields.io and Swift Package Index badges to `README.md` and document cross-platform support and runtime caveats across Apple platforms, Linux (`Glibc` / `Musl`), Windows, Android, and WASI.
+
 ## [0.3.0] - 2026-11-24
 
 ### Added
@@ -57,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation & Tooling:**
   - Multi-module Apple DocC catalogs across all 11 library products with Swift Package Index (`.spi.yml`) configuration and `swift-docc-plugin` integration.
 
-[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/SamPetherbridge/Rigging/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/SamPetherbridge/Rigging/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/SamPetherbridge/Rigging/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/SamPetherbridge/Rigging/releases/tag/0.1.0

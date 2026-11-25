@@ -48,11 +48,11 @@ Swift already has two great foundational packages:
 
 ## Installation
 
-Add `Rigging` to your `Package.swift` (Swift 6.2+, macOS 15+ / iOS 18+ / tvOS 18+ / watchOS 11+ / visionOS 2+ / Linux):
+Add `Rigging` to your `Package.swift` (Swift 6.2+, macOS 15+ / iOS 18+ / tvOS 18+ / watchOS 11+ / visionOS 2+ / Linux / Windows / Android / WASI):
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.3.0"),
+    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.4.0"),
 ],
 targets: [
     .executableTarget(
@@ -91,6 +91,8 @@ Link only the products your binary needs—`RiggingCore` and `RiggingTOML` have 
 | `RiggingArgumentParser` | `RiggingCore` + `swift-argument-parser` | Non-clobbering `ParsableArguments` bridge & turnkey `ConfigSubcommand` |
 | `RiggingSwiftConfiguration` | `RiggingCore` + `apple/swift-configuration` | Bidirectional `ConfigProvider` / `ConfigReader` adapter |
 | `RiggingTesting` | `RiggingCore` only | Hermetic `SettingsContext.inMemory`, `InMemoryFileSystem`, and mock providers |
+
+> **Platform notes:** All targets compile across Apple platforms, Linux (`Glibc` & `Musl`), Windows, Android, and WebAssembly (`WASI`, excluding `RiggingYAML`'s C `Yams` dependency when targeting WASI without a C cross-toolchain). Platform-specific features degrade cleanly: `KeychainProvider` requires Apple `Security.framework`, `ManagedPreferencesSource` requires macOS `CFPreferences`, CLI subprocess providers (`op`, `bws`, `bw`, `pass`, `sops`) execute on macOS/Linux/Windows, and 1Password Connect REST requires `Darwin` or `FoundationNetworking`.
 
 > **Note on SwiftPM resolution:** Because all integration products live in one package manifest, SwiftPM fetches the package-level dependencies (`swift-syntax`, `swift-argument-parser`, `swift-configuration`, `Yams`, and `swift-docc-plugin`) during dependency resolution, while your targets only compile and link the products you explicitly depend on.
 
