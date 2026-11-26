@@ -102,7 +102,24 @@ let package = Package(
             name: "RiggingYAML",
             dependencies: [
                 "RiggingCore",
-                .product(name: "Yams", package: "Yams"),
+                .product(
+                    name: "Yams",
+                    package: "Yams",
+                    condition: .when(platforms: [
+                        .macOS,
+                        .macCatalyst,
+                        .iOS,
+                        .tvOS,
+                        .watchOS,
+                        .visionOS,
+                        .driverKit,
+                        .linux,
+                        .android,
+                        .windows,
+                        .openbsd,
+                        .custom("freebsd"),
+                    ])
+                ),
             ]
         ),
 

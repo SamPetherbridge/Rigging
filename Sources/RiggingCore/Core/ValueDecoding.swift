@@ -1164,8 +1164,23 @@ private func convertJSONObjectToRawValue(_ object: Any, expectedType: String) th
         return .double(number.doubleValue)
     }
     #else
-    if let boolValue = object as? Bool {
+    if type(of: object) == Bool.self, let boolValue = object as? Bool {
         return .bool(boolValue)
+    }
+    if let number = object as? NSNumber {
+        let boolType = type(of: NSNumber(value: true))
+        let intType = type(of: NSNumber(value: 1))
+        let objCType = String(cString: number.objCType)
+        if (boolType != intType && type(of: number) == boolType) || objCType == "B" {
+            return .bool(number.boolValue)
+        }
+        if objCType == "d" || objCType == "f" {
+            return .double(number.doubleValue)
+        }
+        if objCType == "Q" && number.uint64Value > UInt64(Int64.max) {
+            return .double(number.doubleValue)
+        }
+        return .int(number.int64Value)
     }
     if let int64Value = object as? Int64 {
         return .int(int64Value)
@@ -1181,19 +1196,6 @@ private func convertJSONObjectToRawValue(_ object: Any, expectedType: String) th
     }
     if let doubleValue = object as? Double {
         return .double(doubleValue)
-    }
-    if let number = object as? NSNumber {
-        let objCType = String(cString: number.objCType)
-        if objCType == "B" {
-            return .bool(number.boolValue)
-        }
-        if objCType == "d" || objCType == "f" {
-            return .double(number.doubleValue)
-        }
-        if objCType == "Q" && number.uint64Value > UInt64(Int64.max) {
-            return .double(number.doubleValue)
-        }
-        return .int(number.int64Value)
     }
     #endif
     if let array = object as? [Any] {

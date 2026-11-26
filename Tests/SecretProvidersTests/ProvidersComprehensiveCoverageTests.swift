@@ -25,7 +25,7 @@ struct ProvidersComprehensiveCoverageTests {
         #expect(emptyOut.isEmpty)
 
         // URLSessionOnePasswordHTTPTransport with custom failing URLProtocol
-        final class MockFailProtocol: URLProtocol, @unchecked Sendable {
+        final class MockFailProtocol: URLProtocol {
             override class func canInit(with request: URLRequest) -> Bool { true }
             override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
             override func startLoading() {

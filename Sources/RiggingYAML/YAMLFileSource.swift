@@ -1,6 +1,8 @@
 import Foundation
 import RiggingCore
+#if canImport(Yams)
 import Yams
+#endif
 
 /// Classifies the provenance category assigned to settings loaded from a YAML configuration file.
 ///
@@ -514,6 +516,7 @@ public struct YAMLUserConfigSource: SettingsSource, Sendable {
 // MARK: - Internal YAML Node -> RawConfigTree Converter
 
 enum YAMLConfigLoader {
+    #if canImport(Yams)
     static func loadFile(
         atPath path: String,
         activeProfile: String?,
@@ -859,6 +862,22 @@ enum YAMLConfigLoader {
             )
         }
     }
+    #else
+    static func loadFile(
+        atPath path: String,
+        activeProfile: String?,
+        originStyle: YAMLSourceOriginStyle,
+        caseSensitive: Bool,
+        fileSystem: any FileSystem
+    ) throws -> RawConfigTree {
+        _ = (activeProfile, originStyle, caseSensitive, fileSystem)
+        throw ConfigFileParseError(
+            path: path,
+            format: "YAML",
+            reason: "YAML parsing via Yams is unavailable on this platform."
+        )
+    }
+    #endif
 }
 
 enum YAMLProfileResolver {

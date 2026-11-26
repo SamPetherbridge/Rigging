@@ -366,10 +366,16 @@ public struct SOPSProvider: SecretProvider, Sendable {
             return Data(number.stringValue.utf8)
         }
         #else
-        if let boolValue = value as? Bool {
+        if type(of: value) == Bool.self, let boolValue = value as? Bool {
             return Data((boolValue ? "true" : "false").utf8)
         }
         if let number = value as? NSNumber {
+            let boolType = type(of: NSNumber(value: true))
+            let intType = type(of: NSNumber(value: 1))
+            let cType = String(cString: number.objCType)
+            if (boolType != intType && type(of: number) == boolType) || cType == "B" {
+                return Data((number.boolValue ? "true" : "false").utf8)
+            }
             return Data(number.stringValue.utf8)
         }
         #endif

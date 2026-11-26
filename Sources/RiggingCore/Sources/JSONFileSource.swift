@@ -801,8 +801,23 @@ enum FoundationObjectConverter {
             return .int(number.int64Value)
         }
         #else
-        if let boolVal = anyValue as? Bool {
+        if type(of: anyValue) == Bool.self, let boolVal = anyValue as? Bool {
             return .bool(boolVal)
+        }
+        if let number = anyValue as? NSNumber {
+            let boolType = type(of: NSNumber(value: true))
+            let intType = type(of: NSNumber(value: 1))
+            let cType = String(cString: number.objCType)
+            if (boolType != intType && type(of: number) == boolType) || cType == "B" {
+                return .bool(number.boolValue)
+            }
+            if cType == "d" || cType == "f" {
+                return .double(number.doubleValue)
+            }
+            if cType == "Q" && number.uint64Value > UInt64(Int64.max) {
+                return .double(number.doubleValue)
+            }
+            return .int(number.int64Value)
         }
         if let int64Val = anyValue as? Int64 {
             return .int(int64Val)
@@ -818,19 +833,6 @@ enum FoundationObjectConverter {
         }
         if let doubleVal = anyValue as? Double {
             return .double(doubleVal)
-        }
-        if let number = anyValue as? NSNumber {
-            let cType = String(cString: number.objCType)
-            if cType == "B" {
-                return .bool(number.boolValue)
-            }
-            if cType == "d" || cType == "f" {
-                return .double(number.doubleValue)
-            }
-            if cType == "Q" && number.uint64Value > UInt64(Int64.max) {
-                return .double(number.doubleValue)
-            }
-            return .int(number.int64Value)
         }
         #endif
 

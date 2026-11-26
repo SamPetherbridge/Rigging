@@ -1127,6 +1127,7 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
     /// cannot overflow downstream clock arithmetic.
     private static let maxRetryAfterSeconds: Int64 = 7 * 24 * 60 * 60
 
+    #if canImport(Darwin) || canImport(FoundationNetworking)
     private static func httpHeaderValue(_ name: String, in response: HTTPURLResponse) -> String? {
         if let direct = response.value(forHTTPHeaderField: name) {
             return direct
@@ -1139,6 +1140,7 @@ public struct OnePasswordProvider: SecretProvider, Sendable {
         }
         return nil
     }
+    #endif
 
     private static func parseRetryAfterDeltaSeconds(_ raw: String?) -> Duration? {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
