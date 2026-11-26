@@ -18,7 +18,7 @@ Add `Rigging` to your `Package.swift` dependencies, along with any optional secr
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.4.0"),
+    .package(url: "https://github.com/SamPetherbridge/Rigging.git", from: "0.4.1"),
 ],
 targets: [
     .executableTarget(

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-26
+
+### Fixed
+
+- **`RiggingYAML` & `Package.swift`:** Scope the `Yams` dependency with `condition: .when(platforms: [...])` excluding `.wasi` and guard `import Yams` behind `#if canImport(Yams)` so all 11 Rigging targets build cleanly for WebAssembly (`wasm32-unknown-wasip1`) while degrading cleanly with `ConfigFileParseError` on WASI.
+- **`RiggingOnePassword`:** Guard `OnePasswordProvider.httpHeaderValue(_:in:)` behind `#if canImport(Darwin) || canImport(FoundationNetworking)` so `HTTPURLResponse` is not referenced on WASI targets without `FoundationNetworking`.
+- **`RiggingCore` & `RiggingUnixPass`:** Fix non-Darwin `JSONSerialization` `NSNumber` vs. `Bool` bridging in `ValueDecoding`, `JSONFileSource`, and `SOPSProvider` so integer `0`/`1` values are not misclassified as booleans on Linux.
+- **`SecretProvidersTests`:** Remove redundant `@unchecked Sendable` on `MockFailProtocol` (`URLProtocol` subclass) so the full test suite builds cleanly on Linux `FoundationNetworking`.
+
 ## [0.4.0] - 2026-11-25
 
 ### Added
@@ -67,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation & Tooling:**
   - Multi-module Apple DocC catalogs across all 11 library products with Swift Package Index (`.spi.yml`) configuration and `swift-docc-plugin` integration.
 
-[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/SamPetherbridge/Rigging/compare/0.4.1...HEAD
+[0.4.1]: https://github.com/SamPetherbridge/Rigging/compare/0.4.0...0.4.1
 [0.4.0]: https://github.com/SamPetherbridge/Rigging/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/SamPetherbridge/Rigging/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/SamPetherbridge/Rigging/compare/0.1.0...0.2.0
